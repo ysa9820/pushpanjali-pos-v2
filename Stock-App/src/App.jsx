@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Barcode from 'react-barcode';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
@@ -8,8 +8,7 @@ export default function App() {
   const [printerName, setPrinterName] = useState(localStorage.getItem('barcode_printer') || '');
   const [isSettingUp, setIsSettingUp] = useState(!localStorage.getItem('server_ip'));
 
-  // --- TAB NAVIGATION ---
-  const [activeTab, setActiveTab] = useState('ENTRY'); // 'ENTRY' or 'INVENTORY'
+  const [activeTab, setActiveTab] = useState('ENTRY');
 
   // --- APP STATE ---
   const [supplier, setSupplier] = useState({ name: '', billNo: '', date: new Date().toISOString().split('T')[0] });
@@ -19,22 +18,31 @@ export default function App() {
   const [liveStock, setLiveStock] = useState([]);
   const [dirtyEdits, setDirtyEdits] = useState({});
   const [printQueue, setPrintQueue] = useState([]);
-  
-  const [isPrinting, setIsPrinting] = useState(false); // Prevents UI freeze
+  const [isPrinting, setIsPrinting] = useState(false);
   const [reportSearch, setReportSearch] = useState('');
+
+  // --- TALLY-STYLE SUPPLIER SEARCH STATES ---
+  const [supplierList, setSupplierList] = useState([]);
+  const [supplierText, setSupplierText] = useState('');
+  const [showSupplierDrop, setShowSupplierDrop] = useState(false);
+
+  // --- SIZE RULES LIST STATES ---
+  const [showSizeModal, setShowSizeModal] = useState(false);
+  const [savedSizeRules, setSavedSizeRules] = useState(JSON.parse(localStorage.getItem('saved_size_rules')) || []);
+  const [newRuleForm, setNewRuleForm] = useState({ name: '', startSize: '', endSize: '', sizeStep: '2', priceInc: '10' });
+  const [activeSizeRule, setActiveSizeRule] = useState(null); // Holds the currently selected rule
 
   // --- FETCH DATA ---
   useEffect(() => {
-    if (serverIP && !isSettingUp) fetchLiveStock();
+    if (serverIP && !isSettingUp) {
+      fetchLiveStock();
+      fetchGlobalSettings();
+    }
   }, [serverIP, isSettingUp]);
 
   useEffect(() => {
-    // Listen for the print to finish from main.js to unfreeze UI
     if (ipcRenderer) {
-      ipcRenderer.on('print-finished', () => {
-        setIsPrinting(false);
-        setPrintQueue([]);
-      });
+      ipcRenderer.on('print-finished', () => { setIsPrinting(false); setPrintQueue([]); });
     }
     return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
   }, []);
@@ -46,8 +54,37 @@ export default function App() {
       .catch(() => console.error("Cannot connect to server."));
   };
 
+  const fetchGlobalSettings = () => {
+    fetch(`http://${serverIP}:5000/api/settings`)
+      .then(res => res.json())
+      .then(data => { if (data.suppliers) setSupplierList(data.suppliers); })
+      .catch(() => console.error("Cannot fetch settings."));
+  };
+
+  // --- TALLY-STYLE SUPPLIER LOGIC ---
+  const selectSupplier = (name) => {
+    setSupplierText(name);
+    setSupplier({ ...supplier, name });
+    setShowSupplierDrop(false);
+  };
+
+  const addNewSupplierAndSelect = async (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const newList = [...supplierList, trimmed];
+    setSupplierList(newList);
+    selectSupplier(trimmed);
+    await fetch(`http://${serverIP}:5000/api/settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ suppliers: newList })
+    });
+  };
+
+  const filteredSuppliers = supplierList.filter(s => s.toLowerCase().includes(supplierText.toLowerCase()));
+  const exactMatchExists = supplierList.some(s => s.toLowerCase() === supplierText.trim().toLowerCase());
+
   // --- BARCODE GENERATOR ---
-  const generateNextBarcode = () => {
+  const generateNextBarcodes = (count = 1) => {
     const allBarcodes = [...liveStock, ...staging].map(i => i.barcode);
     let maxSeries = 10000;
     allBarcodes.forEach(code => {
@@ -56,36 +93,98 @@ export default function App() {
         if (!isNaN(num) && num > maxSeries) maxSeries = num;
       }
     });
-    return 'B' + (maxSeries + 1);
+    return Array.from({ length: count }).map((_, i) => 'B' + (maxSeries + 1 + i));
   };
 
-  // --- TAB 1: STOCK ENTRY ACTIONS ---
   const handleItemChange = (e, field) => setItem({ ...item, [field]: e.target.value });
 
+  // --- SIZE RULES LOGIC ---
+  const saveNewSizeRule = () => {
+    if (!newRuleForm.name || !newRuleForm.startSize || !newRuleForm.endSize) return alert("Rule Name, Start, and End sizes are required!");
+    const newRule = { 
+      id: Date.now(), 
+      name: newRuleForm.name, 
+      startSize: newRuleForm.startSize, 
+      endSize: newRuleForm.endSize, 
+      sizeStep: newRuleForm.sizeStep || '1', 
+      priceInc: newRuleForm.priceInc || '0' 
+    };
+    const updatedRules = [...savedSizeRules, newRule];
+    setSavedSizeRules(updatedRules);
+    localStorage.setItem('saved_size_rules', JSON.stringify(updatedRules));
+    setNewRuleForm({ name: '', startSize: '', endSize: '', sizeStep: '2', priceInc: '10' });
+  };
+
+  const deleteSizeRule = (id) => {
+    const updated = savedSizeRules.filter(r => r.id !== id);
+    setSavedSizeRules(updated);
+    localStorage.setItem('saved_size_rules', JSON.stringify(updated));
+    if (activeSizeRule && activeSizeRule.id === id) setActiveSizeRule(null);
+  };
+
+  const applySizeRuleToForm = (rule) => {
+    setActiveSizeRule(rule);
+    setShowSizeModal(false);
+  };
+
+  // --- ADD TO STAGING ---
   const addToStaging = () => {
     if (!item.name || !item.mrp || !item.qty) return alert("Goods Name, MRP, and Qty are required.");
     
-    let finalBarcode = item.barcode.trim();
-    if (finalBarcode === '') finalBarcode = generateNextBarcode();
-    else {
-      const isDuplicate = liveStock.some(inv => (inv.barcode||'').toLowerCase() === finalBarcode.toLowerCase());
-      if (isDuplicate && !window.confirm(`⚠️ Barcode [${finalBarcode}] already exists in master. Add anyway?`)) return;
-    }
+    if (activeSizeRule) {
+      // APPLY THE SAVED SIZE RULE
+      let currentSize = parseInt(activeSizeRule.startSize);
+      const endSize = parseInt(activeSizeRule.endSize);
+      let step = parseInt(activeSizeRule.sizeStep);
+      if (isNaN(step) || step <= 0) step = 1; // Failsafe
 
-    setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
-    // Reset fields ready for next item
+      let currentMrp = parseFloat(item.mrp); 
+      let currentPur = parseFloat(item.purPrice || 0); 
+      const priceInc = parseFloat(activeSizeRule.priceInc || 0);
+      const qty = item.qty; 
+
+      const generatedItems = [];
+      while (currentSize <= endSize) {
+        generatedItems.push({
+          ...item, size: currentSize.toString(), mrp: currentMrp.toString(), purPrice: currentPur.toString(), qty: qty.toString()
+        });
+        currentSize += step; currentMrp += priceInc; currentPur += priceInc;
+      }
+      
+      const newBarcodes = generateNextBarcodes(generatedItems.length);
+      const finalizedItems = generatedItems.map((genItem, i) => ({ ...genItem, barcode: newBarcodes[i], supplierName: supplier.name }));
+      setStaging([...staging, ...finalizedItems]);
+
+    } else {
+      // SINGLE ITEM
+      let finalBarcode = item.barcode.trim();
+      if (finalBarcode === '') finalBarcode = generateNextBarcodes(1)[0];
+      else {
+        const isDuplicate = liveStock.some(inv => (inv.barcode||'').toLowerCase() === finalBarcode.toLowerCase());
+        if (isDuplicate && !window.confirm(`⚠️ Barcode [${finalBarcode}] already exists in master. Add anyway?`)) return;
+      }
+      setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
+    }
+    
     setItem({ ...item, barcode: '', size: '', qty: '1' }); 
   };
 
+  // --- EXCEL EDITS ---
   const updateStagingRow = (index, field, value) => {
     const newStaging = [...staging];
     newStaging[index][field] = value;
     setStaging(newStaging);
   };
 
+  const updateLiveRow = (barcode, field, value) => {
+    const updated = liveStock.map(inv => inv.barcode === barcode ? { ...inv, [field]: value } : inv);
+    setLiveStock(updated);
+    const changedItem = updated.find(inv => inv.barcode === barcode);
+    setDirtyEdits(prev => ({ ...prev, [barcode]: changedItem }));
+  };
+
   const saveBatch = async (shouldPrint) => {
     if (staging.length === 0) return alert("List is empty!");
-    
     try {
       for (const stgItem of staging) {
         await fetch(`http://${serverIP}:5000/api/inventory`, {
@@ -97,40 +196,23 @@ export default function App() {
           })
         });
       }
-
       if (shouldPrint) {
         setPrintQueue([...staging]);
-        setIsPrinting(true); // Show loading screen
-        
-        // Wait 1 second for DOM to render the hidden barcodes, then print
+        setIsPrinting(true); 
         setTimeout(() => { 
-          if (ipcRenderer && printerName) {
-            ipcRenderer.send('print-silent', printerName);
-          } else {
-            window.print();
-            setIsPrinting(false);
-            setPrintQueue([]);
-          }
+          if (ipcRenderer && printerName) ipcRenderer.send('print-silent', printerName);
+          else { window.print(); setIsPrinting(false); setPrintQueue([]); }
         }, 1000);
+      } else {
+        alert("✅ Stock Successfully Saved!");
       }
-      
-      alert("✅ Stock Successfully Saved!");
-      setStaging([]);
-      fetchLiveStock();
+      setStaging([]); fetchLiveStock();
     } catch (err) { alert("Failed to save to server."); setIsPrinting(false); }
-  };
-
-  // --- TAB 2: INVENTORY MASTER ACTIONS ---
-  const updateLiveRow = (barcode, field, value) => {
-    const updated = liveStock.map(inv => inv.barcode === barcode ? { ...inv, [field]: value } : inv);
-    setLiveStock(updated);
-    const changedItem = updated.find(inv => inv.barcode === barcode);
-    setDirtyEdits(prev => ({ ...prev, [barcode]: changedItem }));
   };
 
   const saveLiveEdits = async () => {
     const itemsToUpdate = Object.values(dirtyEdits);
-    if (itemsToUpdate.length === 0) return alert("No edits to save!");
+    if (itemsToUpdate.length === 0) return;
     try {
       for (const invItem of itemsToUpdate) {
         await fetch(`http://${serverIP}:5000/api/inventory/${invItem.barcode}`, {
@@ -143,8 +225,7 @@ export default function App() {
         });
       }
       alert(`✅ Updated ${itemsToUpdate.length} item(s)!`);
-      setDirtyEdits({});
-      fetchLiveStock();
+      setDirtyEdits({}); fetchLiveStock();
     } catch (e) { alert("Update failed."); }
   };
 
@@ -156,10 +237,9 @@ export default function App() {
 
   const filteredInventory = liveStock.filter(inv => {
     const term = reportSearch.toLowerCase();
-    return (inv.name||'').toLowerCase().includes(term) || (inv.barcode||'').toLowerCase().includes(term) || (inv.supplierName||'').toLowerCase().includes(term);
+    return (inv.name||'').toLowerCase().includes(term) || (inv.barcode||'').toLowerCase().includes(term) || (inv.supplierName||'').toLowerCase().includes(term) || (inv.category||'').toLowerCase().includes(term);
   });
 
-  // --- RENDER ---
   const inputClass = "w-full bg-transparent border border-transparent hover:border-gray-400 focus:border-blue-500 focus:bg-white rounded px-1 outline-none font-bold";
 
   if (isSettingUp) {
@@ -178,7 +258,6 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-100 font-sans text-sm overflow-hidden relative">
       
-      {/* LOADING OVERLAY (Prevents clicks during print) */}
       {isPrinting && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-white p-8 rounded shadow-2xl text-center">
@@ -188,7 +267,6 @@ export default function App() {
         </div>
       )}
 
-      {/* HIDDEN PRINT DOM */}
       <div id="printable-barcode" className="hidden print:flex flex-col">
         {printQueue.map((p, idx) => (
           Array.from({ length: parseInt(p.qty) || 1 }).map((_, i) => (
@@ -201,8 +279,48 @@ export default function App() {
         ))}
       </div>
 
+      {/* SIZE RULES MODAL */}
+      {showSizeModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-2xl w-[800px] flex overflow-hidden h-[500px]">
+            {/* Left: Saved Rules */}
+            <div className="w-1/2 bg-gray-100 border-r p-4 flex flex-col">
+              <h3 className="font-bold text-gray-700 border-b pb-2 mb-2">📋 Saved Size Rules</h3>
+              <div className="flex-1 overflow-y-auto pr-2">
+                {savedSizeRules.length === 0 ? <p className="text-gray-400 text-xs italic mt-2">No rules saved yet.</p> : null}
+                {savedSizeRules.map((r) => (
+                  <div key={r.id} className="bg-white border rounded p-2 mb-2 shadow-sm relative group">
+                    <div className="font-bold text-purple-900 text-base">{r.name}</div>
+                    <div className="text-xs text-gray-600 mt-1">Sizes: {r.startSize} to {r.endSize} (Step: {r.sizeStep})</div>
+                    <div className="text-xs text-green-700 font-bold">Price +₹{r.priceInc} per size</div>
+                    <button onClick={() => deleteSizeRule(r.id)} className="absolute top-2 right-2 text-red-500 hidden group-hover:block font-bold">❌</button>
+                    <button onClick={() => applySizeRuleToForm(r)} className="mt-2 w-full bg-purple-100 text-purple-800 font-bold py-1 rounded hover:bg-purple-200">✅ Apply Rule</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Right: Create New Rule */}
+            <div className="w-1/2 p-6 flex flex-col bg-white">
+              <h3 className="font-bold text-blue-900 border-b pb-2 mb-4">➕ Create New Rule</h3>
+              <label className="text-xs font-bold text-gray-600">Rule Name (e.g. Mens Shirts Standard)</label>
+              <input type="text" value={newRuleForm.name} onChange={e => setNewRuleForm({...newRuleForm, name: e.target.value})} className="border p-2 rounded w-full mb-3 outline-none focus:border-purple-500" />
+              
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div><label className="text-xs font-bold text-gray-600">Start Size</label><input type="number" value={newRuleForm.startSize} onChange={e => setNewRuleForm({...newRuleForm, startSize: e.target.value})} className="border p-2 rounded w-full outline-none focus:border-purple-500" /></div>
+                <div><label className="text-xs font-bold text-gray-600">End Size</label><input type="number" value={newRuleForm.endSize} onChange={e => setNewRuleForm({...newRuleForm, endSize: e.target.value})} className="border p-2 rounded w-full outline-none focus:border-purple-500" /></div>
+                <div><label className="text-xs font-bold text-gray-600">Size Step</label><input type="number" value={newRuleForm.sizeStep} onChange={e => setNewRuleForm({...newRuleForm, sizeStep: e.target.value})} className="border p-2 rounded w-full outline-none focus:border-purple-500" /></div>
+                <div><label className="text-xs font-bold text-gray-600">+₹ Increase/Size</label><input type="number" value={newRuleForm.priceInc} onChange={e => setNewRuleForm({...newRuleForm, priceInc: e.target.value})} className="border p-2 rounded w-full outline-none focus:border-purple-500" /></div>
+              </div>
+              
+              <button onClick={saveNewSizeRule} className="bg-blue-600 text-white font-bold py-2 rounded shadow hover:bg-blue-700">Save Rule to List</button>
+              <button onClick={() => setShowSizeModal(false)} className="mt-auto bg-gray-300 text-gray-800 font-bold py-2 rounded hover:bg-gray-400">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* HEADER TABS */}
-      <div className="bg-blue-900 text-white p-2 flex justify-between items-center shadow">
+      <div className="bg-blue-900 text-white p-2 flex justify-between items-center shadow z-10">
         <div className="flex gap-4">
           <button onClick={() => setActiveTab('ENTRY')} className={`px-6 py-2 font-bold rounded ${activeTab === 'ENTRY' ? 'bg-white text-blue-900 shadow' : 'bg-blue-800 hover:bg-blue-700'}`}>📥 Stock In & Print</button>
           <button onClick={() => setActiveTab('INVENTORY')} className={`px-6 py-2 font-bold rounded ${activeTab === 'INVENTORY' ? 'bg-white text-blue-900 shadow' : 'bg-blue-800 hover:bg-blue-700'}`}>📊 Inventory Master</button>
@@ -210,30 +328,72 @@ export default function App() {
         <button onClick={() => setIsSettingUp(true)} className="bg-gray-800 px-4 py-1.5 rounded font-bold hover:bg-black text-xs">⚙️ Setup</button>
       </div>
 
-      {/* TAB 1: STOCK ENTRY */}
+      {/* TAB 1: ENTRY */}
       {activeTab === 'ENTRY' && (
         <div className="flex flex-col flex-1 p-2 gap-2 overflow-hidden">
           
-          <div className="bg-white border border-gray-300 p-2 shadow-sm flex items-center gap-4 rounded">
-            <span className="font-bold text-gray-700">Supplier</span><input type="text" value={supplier.name} onChange={e => setSupplier({ ...supplier, name: e.target.value })} className="border p-1.5 w-64 rounded bg-yellow-50 outline-none focus:border-blue-500" placeholder="Type supplier name..." />
-            <span className="font-bold text-gray-700">Bill No</span><input type="text" value={supplier.billNo} onChange={e => setSupplier({ ...supplier, billNo: e.target.value })} className="border p-1.5 w-32 rounded outline-none" />
-            <span className="font-bold text-gray-700">Date</span><input type="date" value={supplier.date} onChange={e => setSupplier({ ...supplier, date: e.target.value })} className="border p-1.5 rounded outline-none" />
+          {/* TALLY-STYLE TOP BAR */}
+          <div className="bg-white border border-gray-300 p-2 shadow-sm flex items-center gap-4 rounded z-20">
+            <span className="font-bold text-gray-700">Supplier</span>
+            
+            {/* TALLY COMBOBOX */}
+            <div className="relative w-72">
+              <input 
+                type="text" 
+                value={supplierText} 
+                onChange={(e) => { setSupplierText(e.target.value); setShowSupplierDrop(true); setSupplier({...supplier, name: e.target.value}); }}
+                onFocus={() => setShowSupplierDrop(true)}
+                onBlur={() => setTimeout(() => setShowSupplierDrop(false), 200)}
+                placeholder="Search or add supplier..." 
+                className="border-2 border-blue-400 p-1.5 w-full bg-blue-50 outline-none focus:border-blue-600 rounded font-bold text-blue-900" 
+              />
+              {showSupplierDrop && (
+                <div className="absolute top-full left-0 w-full bg-white border border-gray-300 shadow-xl max-h-60 overflow-y-auto rounded-b z-50">
+                  {filteredSuppliers.map((s, i) => (
+                    <div key={i} className="p-2 border-b hover:bg-blue-100 cursor-pointer font-bold text-gray-700" onClick={() => selectSupplier(s)}>{s}</div>
+                  ))}
+                  {supplierText.trim() && !exactMatchExists && (
+                    <div className="p-2 bg-green-100 text-green-800 font-bold cursor-pointer hover:bg-green-200 flex items-center gap-2" onClick={() => addNewSupplierAndSelect(supplierText)}>
+                      <span>➕</span> Add "{supplierText}" as new
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <span className="font-bold text-gray-700 ml-4">Bill No</span><input type="text" value={supplier.billNo} onChange={e => setSupplier({ ...supplier, billNo: e.target.value })} className="border p-1.5 w-32 rounded outline-none" />
+            <span className="font-bold text-gray-700 ml-4">Date</span><input type="date" value={supplier.date} onChange={e => setSupplier({ ...supplier, date: e.target.value })} className="border p-1.5 rounded outline-none" />
           </div>
 
-          <div className="flex gap-2 bg-white border border-gray-300 p-3 shadow-sm rounded items-end">
+          <div className="flex gap-2 bg-white border border-gray-300 p-3 shadow-sm rounded items-end z-10">
             <div className="flex flex-col"><label className="font-bold text-gray-600 text-xs">Head</label><select value={item.category} onChange={e => handleItemChange(e, 'category')} className="border p-1.5 rounded outline-none"><option>Mens</option><option>Girls</option><option>Boys</option><option>Saree</option></select></div>
-            <div className="flex flex-col flex-1"><label className="font-bold text-blue-900 text-xs">Goods Name *</label><input type="text" value={item.name} onChange={e => handleItemChange(e, 'name')} className="border-2 border-blue-400 p-1.5 rounded bg-blue-50 outline-none" /></div>
+            <div className="flex flex-col flex-1"><label className="font-bold text-blue-900 text-xs">Goods Name *</label><input type="text" value={item.name} onChange={e => handleItemChange(e, 'name')} className="border-2 border-blue-400 p-1.5 rounded bg-blue-50 outline-none focus:border-blue-600" /></div>
             <div className="flex flex-col w-32"><label className="font-bold text-gray-600 text-xs">Barcode (Auto)</label><input type="text" value={item.barcode} onChange={e => handleItemChange(e, 'barcode')} placeholder="Blank=Auto" className="border-2 border-gray-400 p-1.5 rounded font-mono font-bold outline-none" /></div>
             <div className="flex flex-col w-24"><label className="font-bold text-gray-600 text-xs">Brand</label><input type="text" value={item.brand} onChange={e => handleItemChange(e, 'brand')} className="border p-1.5 rounded outline-none" /></div>
-            <div className="flex flex-col w-20"><label className="font-bold text-gray-600 text-xs">Size</label><input type="text" value={item.size} onChange={e => handleItemChange(e, 'size')} className="border p-1.5 rounded uppercase outline-none" /></div>
+            
+            <div className="flex flex-col w-32 relative">
+              <label className="font-bold text-purple-800 text-xs flex justify-between">Size <span className="cursor-pointer underline" onClick={() => setShowSizeModal(true)}>Rules</span></label>
+              {activeSizeRule ? (
+                <div className="border-2 border-purple-400 bg-purple-100 p-1 rounded flex justify-between items-center text-xs font-bold text-purple-900 shadow-inner h-[34px]">
+                  <span className="truncate">{activeSizeRule.name}</span>
+                  <button onClick={() => setActiveSizeRule(null)} className="ml-1 text-red-500 hover:text-red-700">❌</button>
+                </div>
+              ) : (
+                <input type="text" value={item.size} onChange={e => handleItemChange(e, 'size')} className="border p-1.5 rounded uppercase outline-none focus:border-blue-500 h-[34px]" />
+              )}
+            </div>
+
             <div className="flex flex-col w-24"><label className="font-bold text-gray-600 text-xs">Pur Price</label><input type="number" value={item.purPrice} onChange={e => handleItemChange(e, 'purPrice')} className="border p-1.5 rounded outline-none" /></div>
-            <div className="flex flex-col w-24"><label className="font-bold text-green-700 text-xs">MRP *</label><input type="number" value={item.mrp} onChange={e => handleItemChange(e, 'mrp')} className="border-2 border-green-500 p-1.5 rounded bg-green-50 font-bold outline-none" /></div>
-            <div className="flex flex-col w-20"><label className="font-bold text-red-600 text-xs">Qty *</label><input type="number" value={item.qty} onChange={e => handleItemChange(e, 'qty')} className="border-2 border-red-500 p-1.5 rounded bg-red-50 text-center font-bold outline-none" /></div>
-            <button onClick={addToStaging} className="bg-blue-600 text-white font-bold py-1.5 px-6 rounded shadow hover:bg-blue-700 h-9">Add Item</button>
+            <div className="flex flex-col w-24"><label className="font-bold text-green-700 text-xs">MRP *</label><input type="number" value={item.mrp} onChange={e => handleItemChange(e, 'mrp')} className="border-2 border-green-500 p-1.5 rounded bg-green-50 font-bold outline-none focus:border-green-600" /></div>
+            <div className="flex flex-col w-20"><label className="font-bold text-red-600 text-xs">Qty *</label><input type="number" value={item.qty} onChange={e => handleItemChange(e, 'qty')} className="border-2 border-red-500 p-1.5 rounded bg-red-50 text-center font-bold outline-none focus:border-red-600" /></div>
+            <button onClick={addToStaging} className="bg-blue-600 text-white font-bold py-1.5 px-6 rounded shadow hover:bg-blue-700 h-[34px]">Add</button>
           </div>
 
-          <div className="flex-1 bg-white border border-gray-300 shadow-sm rounded flex flex-col overflow-hidden">
-            <div className="p-2 bg-gray-200 border-b font-bold text-gray-700">📋 Unsaved Staging List ({staging.length} Items)</div>
+          <div className="flex-1 bg-white border border-gray-300 shadow-sm rounded flex flex-col overflow-hidden z-0">
+            <div className="p-2 bg-gray-200 border-b font-bold text-gray-700 flex justify-between">
+              <span>📋 Unsaved Staging List ({staging.length} Items)</span>
+              <span className="text-xs font-normal">Double-click any cell to edit</span>
+            </div>
             <div className="flex-1 overflow-y-auto">
               <table className="w-full text-left border-collapse text-sm">
                 <thead className="bg-gray-100 sticky top-0 font-bold border-b-2">
@@ -269,7 +429,7 @@ export default function App() {
       {activeTab === 'INVENTORY' && (
         <div className="flex flex-col flex-1 p-2 gap-2 overflow-hidden">
           <div className="bg-white border border-gray-300 p-3 shadow-sm rounded flex items-center gap-4">
-            <span className="font-bold text-gray-700">🔍 Search Master Database:</span>
+            <span className="font-bold text-gray-700">🔍 Filter Database:</span>
             <input autoFocus type="text" value={reportSearch} onChange={e => setReportSearch(e.target.value)} placeholder="Type name, barcode, or supplier..." className="border-2 border-blue-400 p-2 rounded flex-1 bg-blue-50 font-bold outline-none" />
             <div className="font-bold text-blue-900 bg-blue-100 px-4 py-2 rounded border border-blue-300">Found: {filteredInventory.length}</div>
             {Object.keys(dirtyEdits).length > 0 && <button onClick={saveLiveEdits} className="bg-orange-600 text-white px-6 py-2 rounded font-bold shadow animate-pulse">💾 Save {Object.keys(dirtyEdits).length} Edits</button>}
