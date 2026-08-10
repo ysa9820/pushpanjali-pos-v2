@@ -1,14 +1,30 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 
+let win;
+
 app.whenReady().then(() => {
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 1200,
     height: 800,
     autoHideMenuBar: true,
-    webPreferences: { nodeIntegration: true }
+    webPreferences: { 
+      nodeIntegration: true,
+      contextIsolation: false // Allows the React app to trigger silent printing
+    }
   });
+  
   win.loadFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// INTERCEPT SILENT PRINT REQUEST FROM REACT
+ipcMain.on('print-silent', (event, printerName) => {
+  win.webContents.print({ 
+    silent: true, 
+    deviceName: printerName || '', 
+    color: false,
+    margins: { marginType: 'none' }
+  });
 });
 
 app.on('window-all-closed', () => {
