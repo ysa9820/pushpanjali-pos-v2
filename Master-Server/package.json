@@ -1,0 +1,28 @@
+{
+  "name": "pushpanjali-master-server",
+  "version": "1.0.0",
+  "description": "The central brain and database for the POS system",
+  "main": "server.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win -p never"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "electron": "^29.1.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.pushpanjali.masterserver",
+    "productName": "Pushpanjali Master Server",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
