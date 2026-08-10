@@ -1,0 +1,33 @@
+name: Build Master Server
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Master-Server/**'
+      - '.github/workflows/build-server.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out Git repository
+      uses: actions/checkout@v3
+
+    - name: Install Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Install Dependencies & Build
+      working-directory: ./Master-Server
+      run: |
+        npm install
+        npm run build
+
+    - name: Upload Master Server EXE
+      uses: actions/upload-artifact@v3
+      with:
+        name: Pushpanjali-Master-Server
+        path: Master-Server/dist/*.exe
