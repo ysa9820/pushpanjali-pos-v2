@@ -2,18 +2,6 @@ import React, { useState, useEffect } from 'react';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
-// --- ANTI-FREEZE HELPERS ---
-// Prevents Electron from locking input fields after an alert box closes
-const safeAlert = (msg) => {
-  if (document.activeElement) document.activeElement.blur();
-  setTimeout(() => alert(msg), 10);
-};
-
-const safeConfirm = (msg) => {
-  if (document.activeElement) document.activeElement.blur();
-  return window.confirm(msg);
-};
-
 export default function App() {
   const [serverIP, setServerIP] = useState(localStorage.getItem('server_ip') || '');
   const [printerPath, setPrinterPath] = useState(localStorage.getItem('barcode_printer') || '\\\\localhost\\TSC');
@@ -43,6 +31,10 @@ export default function App() {
   const [newRuleForm, setNewRuleForm] = useState({ name: '', startSize: '', endSize: '', sizeStep: '2', priceInc: '10' });
   const [activeSizeRule, setActiveSizeRule] = useState(null);
 
+  // --- CUSTOM ALERTS (Fixes the App Freeze Bug) ---
+  const [appAlert, setAppAlert] = useState({ show: false, msg: '' });
+  const [appConfirm, setAppConfirm] = useState({ show: false, msg: '', onYes: null });
+
   // --- FETCHING ---
   useEffect(() => {
     if (serverIP && !isSettingUp) { fetchLiveStock(); fetchGlobalSettings(); }
@@ -52,7 +44,9 @@ export default function App() {
     if (ipcRenderer) {
       ipcRenderer.on('print-finished', (event, result) => {
         setIsPrinting(false);
-        if (!result.success) safeAlert(`❌ Printer Error:\n${result.errorMsg}\n\nMake sure printer is shared as "${printerPath}"`);
+        if (!result.success) {
+          setAppAlert({ show: true, msg: `❌ Printer Error:\n${result.errorMsg}\n\nMake sure printer is shared as "${printerPath}"` });
+        }
       });
     }
     return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
@@ -102,7 +96,7 @@ export default function App() {
 
   // --- SIZE RULES LOGIC ---
   const saveNewSizeRule = () => {
-    if (!newRuleForm.name || !newRuleForm.startSize || !newRuleForm.endSize) return safeAlert("Required fields missing!");
+    if (!newRuleForm.name || !newRuleForm.startSize || !newRuleForm.endSize) return setAppAlert({ show: true, msg: "Required fields missing!" });
     const newRule = { id: Date.now(), name: newRuleForm.name, startSize: newRuleForm.startSize, endSize: newRuleForm.endSize, sizeStep: newRuleForm.sizeStep || '1', priceInc: newRuleForm.priceInc || '0' };
     const updated = [...savedSizeRules, newRule];
     setSavedSizeRules(updated); localStorage.setItem('saved_size_rules', JSON.stringify(updated));
@@ -117,7 +111,7 @@ export default function App() {
 
   // --- ADD TO STAGING ---
   const addToStaging = () => {
-    if (!item.name || !item.mrp || !item.qty) return safeAlert("Goods Name, MRP, and Qty are required.");
+    if (!item.name || !item.mrp || !item.qty) return setAppAlert({ show: true, msg: "Goods Name, MRP, and Qty are required." });
     
     if (activeSizeRule) {
       let currentSize = parseInt(activeSizeRule.startSize); const endSize = parseInt(activeSizeRule.endSize);
@@ -133,16 +127,28 @@ export default function App() {
       const newBarcodes = generateNextBarcodes(generatedItems.length);
       const finalizedItems = generatedItems.map((genItem, i) => ({ ...genItem, barcode: newBarcodes[i], supplierName: supplier.name }));
       setStaging([...staging, ...finalizedItems]);
+      setItem({ ...item, barcode: '', size: '', qty: '1' }); 
+
     } else {
       let finalBarcode = item.barcode.trim();
       if (finalBarcode === '') finalBarcode = generateNextBarcodes(1)[0];
       else {
         const isDuplicate = liveStock.some(inv => (inv.barcode||'').toLowerCase() === finalBarcode.toLowerCase());
-        if (isDuplicate && !safeConfirm(`⚠️ Barcode [${finalBarcode}] already exists in master. Add anyway?`)) return;
+        if (isDuplicate) {
+          setAppConfirm({
+            show: true, 
+            msg: `⚠️ Barcode [${finalBarcode}] already exists in master. Add anyway?`,
+            onYes: () => {
+              setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
+              setItem({ ...item, barcode: '', size: '', qty: '1' }); 
+            }
+          });
+          return; // Pause here and wait for custom modal
+        }
       }
       setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
+      setItem({ ...item, barcode: '', size: '', qty: '1' }); 
     }
-    setItem({ ...item, barcode: '', size: '', qty: '1' }); 
   };
 
   // --- EXCEL EDITS ---
@@ -154,7 +160,7 @@ export default function App() {
   };
 
   const saveBatch = async (shouldPrint) => {
-    if (staging.length === 0) return safeAlert("List is empty!");
+    if (staging.length === 0) return setAppAlert({ show: true, msg: "List is empty!" });
     try {
       for (const stgItem of staging) {
         await fetch(`http://${serverIP}:5000/api/inventory`, {
@@ -172,10 +178,10 @@ export default function App() {
         ipcRenderer.send('print-silent', { printerPath, labels: staging });
         setTimeout(() => { setIsPrinting(false); }, 5000); // 5-Second Failsafe unfreeze
       } else {
-        safeAlert("✅ Stock Successfully Saved!");
+        setAppAlert({ show: true, msg: "✅ Stock Successfully Saved!" });
       }
       setStaging([]); fetchLiveStock();
-    } catch (err) { safeAlert("Failed to save to server."); setIsPrinting(false); }
+    } catch (err) { setAppAlert({ show: true, msg: "Failed to save to server." }); setIsPrinting(false); }
   };
 
   const saveLiveEdits = async () => {
@@ -187,13 +193,20 @@ export default function App() {
           body: JSON.stringify({ name: invItem.name, category: invItem.category, qty: invItem.qty, price: invItem.price, purchasePrice: invItem.purchasePrice, brand: invItem.brand, size: invItem.size, supplierName: invItem.supplierName })
         });
       }
-      safeAlert(`✅ Updated ${itemsToUpdate.length} item(s)!`); setDirtyEdits({}); fetchLiveStock();
-    } catch (e) { safeAlert("Update failed."); }
+      setAppAlert({ show: true, msg: `✅ Updated ${itemsToUpdate.length} item(s)!` }); 
+      setDirtyEdits({}); fetchLiveStock();
+    } catch (e) { setAppAlert({ show: true, msg: "Update failed." }); }
   };
 
   const deleteLiveItem = async (barcode) => {
-    if (!safeConfirm("Permanently delete?")) return;
-    await fetch(`http://${serverIP}:5000/api/inventory/${barcode}`, { method: 'DELETE' }); fetchLiveStock();
+    setAppConfirm({
+      show: true, 
+      msg: "Permanently delete this item from the Master Database?",
+      onYes: async () => {
+        await fetch(`http://${serverIP}:5000/api/inventory/${barcode}`, { method: 'DELETE' }); 
+        fetchLiveStock();
+      }
+    });
   };
 
   const filteredInventory = liveStock.filter(inv => {
@@ -219,6 +232,30 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-100 font-sans text-sm overflow-hidden relative">
       
+      {/* --- CUSTOM APP ALERTS (PREVENTS FREEZING) --- */}
+      {appAlert.show && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600">
+            <p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p>
+            <button onClick={() => setAppAlert({show: false, msg: ''})} className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700 focus:ring-4 focus:ring-blue-300">OK</button>
+          </div>
+        </div>
+      )}
+
+      {/* --- CUSTOM APP CONFIRM (PREVENTS FREEZING) --- */}
+      {appConfirm.show && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-yellow-500">
+            <p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appConfirm.msg}</p>
+            <div className="flex justify-center gap-4">
+              <button onClick={() => setAppConfirm({show: false, msg: '', onYes: null})} className="bg-gray-300 text-gray-800 font-bold py-2 px-6 rounded hover:bg-gray-400">Cancel</button>
+              <button onClick={() => { appConfirm.onYes(); setAppConfirm({show: false, msg: '', onYes: null}); }} className="bg-red-600 text-white font-bold py-2 px-6 rounded hover:bg-red-700">Yes, Proceed</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* LOADING OVERLAY */}
       {isPrinting && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-white p-8 rounded shadow-2xl text-center border-t-4 border-blue-600">
@@ -262,6 +299,7 @@ export default function App() {
         </div>
       )}
 
+      {/* TOP HEADER MENU */}
       <div className="bg-blue-900 text-white p-2 flex justify-between items-center shadow z-10">
         <div className="flex gap-4">
           <button onClick={() => setActiveTab('ENTRY')} className={`px-6 py-2 font-bold rounded ${activeTab === 'ENTRY' ? 'bg-white text-blue-900 shadow' : 'bg-blue-800 hover:bg-blue-700'}`}>📥 Stock In & Print</button>
@@ -296,7 +334,6 @@ export default function App() {
             <div className="flex flex-col w-32"><label className="font-bold text-gray-600 text-xs">Barcode</label><input type="text" value={item.barcode} onChange={e => handleItemChange(e, 'barcode')} placeholder="Auto" className="border-2 border-gray-400 p-1.5 rounded font-mono font-bold outline-none" /></div>
             <div className="flex flex-col w-24"><label className="font-bold text-gray-600 text-xs">Brand</label><input type="text" value={item.brand} onChange={e => handleItemChange(e, 'brand')} className="border p-1.5 rounded outline-none" /></div>
             
-            {/* NATIVE SIZE RULE COMBOBOX */}
             <div className="flex flex-col w-36 relative">
               <label className="font-bold text-purple-800 text-xs flex justify-between">Size <span className="cursor-pointer underline" onClick={() => setShowSizeModal(true)}>+ Rule</span></label>
               <div className="flex h-[34px] border border-gray-400 rounded focus-within:border-blue-500 bg-white overflow-hidden">
