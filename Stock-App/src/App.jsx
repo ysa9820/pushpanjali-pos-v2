@@ -2,6 +2,18 @@ import React, { useState, useEffect } from 'react';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
+// --- ANTI-FREEZE HELPERS ---
+// Prevents Electron from locking input fields after an alert box closes
+const safeAlert = (msg) => {
+  if (document.activeElement) document.activeElement.blur();
+  setTimeout(() => alert(msg), 10);
+};
+
+const safeConfirm = (msg) => {
+  if (document.activeElement) document.activeElement.blur();
+  return window.confirm(msg);
+};
+
 export default function App() {
   const [serverIP, setServerIP] = useState(localStorage.getItem('server_ip') || '');
   const [printerPath, setPrinterPath] = useState(localStorage.getItem('barcode_printer') || '\\\\localhost\\TSC');
@@ -26,10 +38,12 @@ export default function App() {
 
   // --- SIZE RULES LIST ---
   const [showSizeModal, setShowSizeModal] = useState(false);
+  const [showSizeDrop, setShowSizeDrop] = useState(false);
   const [savedSizeRules, setSavedSizeRules] = useState(JSON.parse(localStorage.getItem('saved_size_rules')) || []);
   const [newRuleForm, setNewRuleForm] = useState({ name: '', startSize: '', endSize: '', sizeStep: '2', priceInc: '10' });
   const [activeSizeRule, setActiveSizeRule] = useState(null);
 
+  // --- FETCHING ---
   useEffect(() => {
     if (serverIP && !isSettingUp) { fetchLiveStock(); fetchGlobalSettings(); }
   }, [serverIP, isSettingUp]);
@@ -38,7 +52,7 @@ export default function App() {
     if (ipcRenderer) {
       ipcRenderer.on('print-finished', (event, result) => {
         setIsPrinting(false);
-        if (!result.success) alert(`❌ Printer Error:\n${result.errorMsg}\n\nMake sure printer is shared as "${printerPath}"`);
+        if (!result.success) safeAlert(`❌ Printer Error:\n${result.errorMsg}\n\nMake sure printer is shared as "${printerPath}"`);
       });
     }
     return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
@@ -88,7 +102,7 @@ export default function App() {
 
   // --- SIZE RULES LOGIC ---
   const saveNewSizeRule = () => {
-    if (!newRuleForm.name || !newRuleForm.startSize || !newRuleForm.endSize) return alert("Required fields missing!");
+    if (!newRuleForm.name || !newRuleForm.startSize || !newRuleForm.endSize) return safeAlert("Required fields missing!");
     const newRule = { id: Date.now(), name: newRuleForm.name, startSize: newRuleForm.startSize, endSize: newRuleForm.endSize, sizeStep: newRuleForm.sizeStep || '1', priceInc: newRuleForm.priceInc || '0' };
     const updated = [...savedSizeRules, newRule];
     setSavedSizeRules(updated); localStorage.setItem('saved_size_rules', JSON.stringify(updated));
@@ -103,7 +117,7 @@ export default function App() {
 
   // --- ADD TO STAGING ---
   const addToStaging = () => {
-    if (!item.name || !item.mrp || !item.qty) return alert("Goods Name, MRP, and Qty are required.");
+    if (!item.name || !item.mrp || !item.qty) return safeAlert("Goods Name, MRP, and Qty are required.");
     
     if (activeSizeRule) {
       let currentSize = parseInt(activeSizeRule.startSize); const endSize = parseInt(activeSizeRule.endSize);
@@ -124,7 +138,7 @@ export default function App() {
       if (finalBarcode === '') finalBarcode = generateNextBarcodes(1)[0];
       else {
         const isDuplicate = liveStock.some(inv => (inv.barcode||'').toLowerCase() === finalBarcode.toLowerCase());
-        if (isDuplicate && !window.confirm(`⚠️ Barcode [${finalBarcode}] already exists in master. Add anyway?`)) return;
+        if (isDuplicate && !safeConfirm(`⚠️ Barcode [${finalBarcode}] already exists in master. Add anyway?`)) return;
       }
       setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
     }
@@ -140,7 +154,7 @@ export default function App() {
   };
 
   const saveBatch = async (shouldPrint) => {
-    if (staging.length === 0) return alert("List is empty!");
+    if (staging.length === 0) return safeAlert("List is empty!");
     try {
       for (const stgItem of staging) {
         await fetch(`http://${serverIP}:5000/api/inventory`, {
@@ -158,10 +172,10 @@ export default function App() {
         ipcRenderer.send('print-silent', { printerPath, labels: staging });
         setTimeout(() => { setIsPrinting(false); }, 5000); // 5-Second Failsafe unfreeze
       } else {
-        alert("✅ Stock Successfully Saved!");
+        safeAlert("✅ Stock Successfully Saved!");
       }
       setStaging([]); fetchLiveStock();
-    } catch (err) { alert("Failed to save to server."); setIsPrinting(false); }
+    } catch (err) { safeAlert("Failed to save to server."); setIsPrinting(false); }
   };
 
   const saveLiveEdits = async () => {
@@ -173,12 +187,12 @@ export default function App() {
           body: JSON.stringify({ name: invItem.name, category: invItem.category, qty: invItem.qty, price: invItem.price, purchasePrice: invItem.purchasePrice, brand: invItem.brand, size: invItem.size, supplierName: invItem.supplierName })
         });
       }
-      alert(`✅ Updated ${itemsToUpdate.length} item(s)!`); setDirtyEdits({}); fetchLiveStock();
-    } catch (e) { alert("Update failed."); }
+      safeAlert(`✅ Updated ${itemsToUpdate.length} item(s)!`); setDirtyEdits({}); fetchLiveStock();
+    } catch (e) { safeAlert("Update failed."); }
   };
 
   const deleteLiveItem = async (barcode) => {
-    if (!window.confirm("Permanently delete?")) return;
+    if (!safeConfirm("Permanently delete?")) return;
     await fetch(`http://${serverIP}:5000/api/inventory/${barcode}`, { method: 'DELETE' }); fetchLiveStock();
   };
 
@@ -209,7 +223,7 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-white p-8 rounded shadow-2xl text-center border-t-4 border-blue-600">
             <h2 className="text-2xl font-bold text-blue-900 mb-2">🖨️ Sending Data to Printer...</h2>
-            <p className="text-gray-600">Sending TSPL code directly to {printerPath}. Please wait.</p>
+            <p className="text-gray-600">Sending 2-Up Side-by-Side TSPL code directly to {printerPath}. Please wait.</p>
           </div>
         </div>
       )}
@@ -295,14 +309,7 @@ export default function App() {
                   <>
                     <input type="text" value={item.size} onChange={e => handleItemChange(e, 'size')} className="flex-1 w-full px-1.5 uppercase outline-none" placeholder="Size" />
                     {savedSizeRules.length > 0 && (
-                      <select 
-                        className="w-5 bg-gray-200 border-l outline-none cursor-pointer"
-                        onChange={e => {
-                          const rule = savedSizeRules.find(r => r.id.toString() === e.target.value);
-                          setActiveSizeRule(rule || null);
-                          e.target.value = ""; 
-                        }}
-                      >
+                      <select className="w-5 bg-gray-200 border-l outline-none cursor-pointer" onChange={e => { const rule = savedSizeRules.find(r => r.id.toString() === e.target.value); setActiveSizeRule(rule || null); e.target.value = ""; }}>
                         <option value="" disabled hidden></option>
                         {savedSizeRules.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                       </select>
@@ -342,7 +349,7 @@ export default function App() {
             </div>
             <div className="bg-gray-200 border-t p-3 flex gap-4">
               <button onClick={() => saveBatch(false)} className="bg-white border-2 border-gray-400 font-bold py-2.5 px-8 rounded shadow-sm hover:bg-gray-100">💾 Save to Master Only</button>
-              <button onClick={() => saveBatch(true)} className="bg-green-700 text-white border-2 border-green-900 font-bold py-2.5 px-8 rounded shadow-sm hover:bg-green-600">🖨️ Save & Fire RAW Barcodes</button>
+              <button onClick={() => saveBatch(true)} className="bg-green-700 text-white border-2 border-green-900 font-bold py-2.5 px-8 rounded shadow-sm hover:bg-green-600">🖨️ Save & Fire RAW 2-Up Barcodes</button>
             </div>
           </div>
         </div>
