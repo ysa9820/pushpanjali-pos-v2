@@ -10,20 +10,24 @@ app.whenReady().then(() => {
     autoHideMenuBar: true,
     webPreferences: { 
       nodeIntegration: true,
-      contextIsolation: false // Allows the React app to trigger silent printing
+      contextIsolation: false
     }
   });
   
   win.loadFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// INTERCEPT SILENT PRINT REQUEST FROM REACT
+// INTERCEPT SILENT PRINT REQUEST
 ipcMain.on('print-silent', (event, printerName) => {
   win.webContents.print({ 
     silent: true, 
     deviceName: printerName || '', 
     color: false,
-    margins: { marginType: 'none' }
+    margins: { marginType: 'none' },
+    printBackground: true, // CRITICAL FOR THERMAL PRINTERS
+    landscape: false
+  }, (success, failureReason) => {
+    if (!success) console.error("Silent Print Failed:", failureReason);
   });
 });
 
