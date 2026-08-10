@@ -8,34 +8,36 @@ export default function App() {
   const [printerName, setPrinterName] = useState(localStorage.getItem('barcode_printer') || '');
   const [isSettingUp, setIsSettingUp] = useState(!localStorage.getItem('server_ip'));
 
-  const [supplier, setSupplier] = useState({ name: '', lrNo: '', billNo: '', date: new Date().toISOString().split('T')[0] });
+  // --- TAB NAVIGATION ---
+  const [activeTab, setActiveTab] = useState('ENTRY'); // 'ENTRY' or 'INVENTORY'
+
+  // --- APP STATE ---
+  const [supplier, setSupplier] = useState({ name: '', billNo: '', date: new Date().toISOString().split('T')[0] });
   const [item, setItem] = useState({ category: 'Mens', name: '', barcode: '', brand: '', size: '', purPrice: '', mrp: '', qty: '1', hsn: '' });
   
   const [staging, setStaging] = useState([]);
-  const [isEditMode, setIsEditMode] = useState(false);
   const [liveStock, setLiveStock] = useState([]);
   const [dirtyEdits, setDirtyEdits] = useState({});
   const [printQueue, setPrintQueue] = useState([]);
-
-  // --- MODALS ---
-  const [showSupplierModal, setShowSupplierModal] = useState(false);
-  const [supplierList, setSupplierList] = useState([]);
-  const [supplierSearch, setSupplierSearch] = useState('');
   
-  // --- STICKY SIZE RULE STATE ---
-  const [showSizeModal, setShowSizeModal] = useState(false);
-  const [sizeRule, setSizeRule] = useState({
-    isActive: false, startSize: '', endSize: '', 
-    sizeStep: localStorage.getItem('matrix_step') || '2', 
-    priceInc: localStorage.getItem('matrix_inc') || '10'
-  });
+  const [isPrinting, setIsPrinting] = useState(false); // Prevents UI freeze
+  const [reportSearch, setReportSearch] = useState('');
 
-  const [showStockReport, setShowStockReport] = useState(false);
-  const [reportFilters, setReportFilters] = useState({ category: 'ALL', brand: '', supplier: '', search: '' });
+  // --- FETCH DATA ---
+  useEffect(() => {
+    if (serverIP && !isSettingUp) fetchLiveStock();
+  }, [serverIP, isSettingUp]);
 
   useEffect(() => {
-    if (serverIP && !isSettingUp) { fetchLiveStock(); fetchGlobalSettings(); }
-  }, [serverIP, isSettingUp]);
+    // Listen for the print to finish from main.js to unfreeze UI
+    if (ipcRenderer) {
+      ipcRenderer.on('print-finished', () => {
+        setIsPrinting(false);
+        setPrintQueue([]);
+      });
+    }
+    return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
+  }, []);
 
   const fetchLiveStock = () => {
     fetch(`http://${serverIP}:5000/api/inventory`)
@@ -44,16 +46,8 @@ export default function App() {
       .catch(() => console.error("Cannot connect to server."));
   };
 
-  const fetchGlobalSettings = () => {
-    fetch(`http://${serverIP}:5000/api/settings`)
-      .then(res => res.json())
-      .then(data => { if (data.suppliers) setSupplierList(data.suppliers); })
-      .catch(() => console.error("Cannot fetch settings."));
-  };
-
-  const handleItemChange = (e, field) => setItem({ ...item, [field]: e.target.value });
-  
-  const generateNextBarcodes = (count = 1) => {
+  // --- BARCODE GENERATOR ---
+  const generateNextBarcode = () => {
     const allBarcodes = [...liveStock, ...staging].map(i => i.barcode);
     let maxSeries = 10000;
     allBarcodes.forEach(code => {
@@ -62,118 +56,36 @@ export default function App() {
         if (!isNaN(num) && num > maxSeries) maxSeries = num;
       }
     });
-    return Array.from({ length: count }).map((_, i) => 'B' + (maxSeries + 1 + i));
+    return 'B' + (maxSeries + 1);
   };
 
-  // --- SUPPLIER ---
-  const selectSupplier = (name) => { setSupplier({ ...supplier, name }); setShowSupplierModal(false); setSupplierSearch(''); };
-  const handleAddSupplier = () => {
-    const trimmed = supplierSearch.trim();
-    if (!trimmed) return;
-    const exists = supplierList.find(s => s.toLowerCase() === trimmed.toLowerCase());
-    if (exists) { selectSupplier(exists); } 
-    else {
-      const newList = [...supplierList, trimmed];
-      fetch(`http://${serverIP}:5000/api/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ suppliers: newList }) });
-      setSupplierList(newList); selectSupplier(trimmed);
-    }
-  };
-  const handleSupplierKeyDown = (e) => { if (e.key === 'Enter') handleAddSupplier(); };
+  // --- TAB 1: STOCK ENTRY ACTIONS ---
+  const handleItemChange = (e, field) => setItem({ ...item, [field]: e.target.value });
 
-  // --- SIZE RULE HANDLER ---
-  const saveSizeRule = () => {
-    if (!sizeRule.startSize || !sizeRule.endSize) return alert("Start and End sizes are required!");
-    if (parseInt(sizeRule.startSize) > parseInt(sizeRule.endSize)) return alert("Start size cannot be greater than end size!");
-    localStorage.setItem('matrix_step', sizeRule.sizeStep);
-    localStorage.setItem('matrix_inc', sizeRule.priceInc);
-    setSizeRule({ ...sizeRule, isActive: true });
-    setShowSizeModal(false);
-  };
-
-  // --- ADD TO STAGING (WITH FREEZE FAILSAFE) ---
   const addToStaging = () => {
-    if (!item.name || !item.mrp) return alert("Goods Name and MRP are strictly required!");
-
-    if (sizeRule.isActive) {
-      let currentSize = parseInt(sizeRule.startSize);
-      const endSize = parseInt(sizeRule.endSize);
-      let step = parseInt(sizeRule.sizeStep);
-      
-      // THE FAILSAFE: Prevents the app from freezing in an infinite loop
-      if (isNaN(step) || step <= 0) step = 1; 
-
-      let currentMrp = parseFloat(item.mrp); 
-      let currentPur = parseFloat(item.purPrice || 0); 
-      const priceInc = parseFloat(sizeRule.priceInc || 0);
-      const qty = item.qty; 
-
-      const generatedItems = [];
-      while (currentSize <= endSize) {
-        generatedItems.push({
-          ...item, size: currentSize.toString(), mrp: currentMrp.toString(), purPrice: currentPur.toString(), qty: qty.toString()
-        });
-        currentSize += step; currentMrp += priceInc; currentPur += priceInc;
-      }
-      
-      const newBarcodes = generateNextBarcodes(generatedItems.length);
-      const finalizedItems = generatedItems.map((genItem, i) => ({ ...genItem, barcode: newBarcodes[i], supplierName: supplier.name }));
-      setStaging([...staging, ...finalizedItems]);
-
-    } else {
-      let finalBarcode = item.barcode.trim();
-      if (finalBarcode === '') finalBarcode = generateNextBarcodes(1)[0];
-      else {
-        const isDuplicate = liveStock.some(inv => (inv.barcode||'').toLowerCase() === finalBarcode.toLowerCase()) || staging.some(stg => (stg.barcode||'').toLowerCase() === finalBarcode.toLowerCase());
-        if (isDuplicate) { if (!window.confirm(`⚠️ Barcode [${finalBarcode}] already exists!\nClick OK to add to existing stock.`)) return; }
-      }
-      setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
-    }
+    if (!item.name || !item.mrp || !item.qty) return alert("Goods Name, MRP, and Qty are required.");
     
-    setItem({ ...item, barcode: '' }); 
+    let finalBarcode = item.barcode.trim();
+    if (finalBarcode === '') finalBarcode = generateNextBarcode();
+    else {
+      const isDuplicate = liveStock.some(inv => (inv.barcode||'').toLowerCase() === finalBarcode.toLowerCase());
+      if (isDuplicate && !window.confirm(`⚠️ Barcode [${finalBarcode}] already exists in master. Add anyway?`)) return;
+    }
+
+    setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
+    // Reset fields ready for next item
+    setItem({ ...item, barcode: '', size: '', qty: '1' }); 
   };
 
-  // --- EXCEL EDIT LOGIC ---
   const updateStagingRow = (index, field, value) => {
     const newStaging = [...staging];
     newStaging[index][field] = value;
     setStaging(newStaging);
   };
 
-  const updateLiveRow = (barcode, field, value) => {
-    const updatedLiveStock = liveStock.map(inv => inv.barcode === barcode ? { ...inv, [field]: value } : inv);
-    setLiveStock(updatedLiveStock);
-    const changedItem = updatedLiveStock.find(inv => inv.barcode === barcode);
-    setDirtyEdits(prev => ({ ...prev, [barcode]: changedItem }));
-  };
-
-  const saveSafeEdits = async () => {
-    const itemsToUpdate = Object.values(dirtyEdits);
-    if (itemsToUpdate.length === 0) return alert("No changes to save!");
-    try {
-      for (const invItem of itemsToUpdate) {
-        await fetch(`http://${serverIP}:5000/api/inventory/${invItem.barcode}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            name: invItem.name, category: invItem.category, qty: invItem.qty, 
-            price: invItem.price, purchasePrice: invItem.purchasePrice, 
-            brand: invItem.brand, size: invItem.size, hsn: invItem.hsn, supplierName: invItem.supplierName 
-          })
-        });
-      }
-      alert(`✅ Safely updated ${itemsToUpdate.length} item(s)!`);
-      setDirtyEdits({}); fetchLiveStock();
-    } catch (e) { alert("Server connection failed during update."); }
-  };
-
-  const deleteLiveItem = async (barcode) => {
-    if (!window.confirm("Permanently delete this item from Master Database?")) return;
-    await fetch(`http://${serverIP}:5000/api/inventory/${barcode}`, { method: 'DELETE' });
-    fetchLiveStock();
-  };
-
-  // --- STOCK IN ---
-  const handleStockIn = async (shouldPrint) => {
-    if (staging.length === 0) return alert("Staging list is empty!");
+  const saveBatch = async (shouldPrint) => {
+    if (staging.length === 0) return alert("List is empty!");
+    
     try {
       for (const stgItem of staging) {
         await fetch(`http://${serverIP}:5000/api/inventory`, {
@@ -185,50 +97,101 @@ export default function App() {
           })
         });
       }
+
       if (shouldPrint) {
-        setPrintQueue(staging);
-        setTimeout(() => { if (ipcRenderer && printerName) ipcRenderer.send('print-silent', printerName); else window.print(); setPrintQueue([]); }, 500);
+        setPrintQueue([...staging]);
+        setIsPrinting(true); // Show loading screen
+        
+        // Wait 1 second for DOM to render the hidden barcodes, then print
+        setTimeout(() => { 
+          if (ipcRenderer && printerName) {
+            ipcRenderer.send('print-silent', printerName);
+          } else {
+            window.print();
+            setIsPrinting(false);
+            setPrintQueue([]);
+          }
+        }, 1000);
       }
-      alert("✅ Stocked In to Master Database!");
-      setStaging([]); fetchLiveStock();
-    } catch (err) { alert("Error sending to Master Server."); }
+      
+      alert("✅ Stock Successfully Saved!");
+      setStaging([]);
+      fetchLiveStock();
+    } catch (err) { alert("Failed to save to server."); setIsPrinting(false); }
   };
 
-  const filteredLiveStock = liveStock.filter(inv => {
-    return (inv.name||'').toLowerCase().includes(item.name.toLowerCase()) && (inv.barcode||'').toLowerCase().includes(item.barcode.toLowerCase());
-  });
-  
-  const reportData = liveStock.filter(inv => {
-    const cMatch = reportFilters.category === 'ALL' || inv.category === reportFilters.category;
-    const bMatch = !reportFilters.brand || (inv.brand||'').toLowerCase().includes(reportFilters.brand.toLowerCase());
-    const sMatch = !reportFilters.supplier || (inv.supplierName||'').toLowerCase().includes(reportFilters.supplier.toLowerCase());
-    const textMatch = !reportFilters.search || (inv.name||'').toLowerCase().includes(reportFilters.search.toLowerCase()) || (inv.barcode||'').includes(reportFilters.search);
-    return cMatch && bMatch && sMatch && textMatch;
+  // --- TAB 2: INVENTORY MASTER ACTIONS ---
+  const updateLiveRow = (barcode, field, value) => {
+    const updated = liveStock.map(inv => inv.barcode === barcode ? { ...inv, [field]: value } : inv);
+    setLiveStock(updated);
+    const changedItem = updated.find(inv => inv.barcode === barcode);
+    setDirtyEdits(prev => ({ ...prev, [barcode]: changedItem }));
+  };
+
+  const saveLiveEdits = async () => {
+    const itemsToUpdate = Object.values(dirtyEdits);
+    if (itemsToUpdate.length === 0) return alert("No edits to save!");
+    try {
+      for (const invItem of itemsToUpdate) {
+        await fetch(`http://${serverIP}:5000/api/inventory/${invItem.barcode}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            name: invItem.name, category: invItem.category, qty: invItem.qty, 
+            price: invItem.price, purchasePrice: invItem.purchasePrice, 
+            brand: invItem.brand, size: invItem.size, supplierName: invItem.supplierName 
+          })
+        });
+      }
+      alert(`✅ Updated ${itemsToUpdate.length} item(s)!`);
+      setDirtyEdits({});
+      fetchLiveStock();
+    } catch (e) { alert("Update failed."); }
+  };
+
+  const deleteLiveItem = async (barcode) => {
+    if (!window.confirm("Permanently delete?")) return;
+    await fetch(`http://${serverIP}:5000/api/inventory/${barcode}`, { method: 'DELETE' });
+    fetchLiveStock();
+  };
+
+  const filteredInventory = liveStock.filter(inv => {
+    const term = reportSearch.toLowerCase();
+    return (inv.name||'').toLowerCase().includes(term) || (inv.barcode||'').toLowerCase().includes(term) || (inv.supplierName||'').toLowerCase().includes(term);
   });
 
+  // --- RENDER ---
   const inputClass = "w-full bg-transparent border border-transparent hover:border-gray-400 focus:border-blue-500 focus:bg-white rounded px-1 outline-none font-bold";
-  const dirtyCount = Object.keys(dirtyEdits).length;
 
   if (isSettingUp) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-gray-900 font-sans">
         <div className="bg-white p-8 rounded-lg shadow-2xl w-[450px]">
           <h1 className="text-2xl font-bold border-b pb-3 mb-4 text-blue-900">⚙️ Local PC Setup</h1>
-          <div className="mb-4"><label className="font-bold text-gray-700 text-sm">Master Server IP Address</label><input type="text" value={serverIP} onChange={(e) => setServerIP(e.target.value)} placeholder="192.168.1.50" className="w-full border-2 border-blue-400 p-2 rounded font-bold text-lg bg-blue-50" /></div>
-          <div className="mb-6"><label className="font-bold text-gray-700 text-sm">Barcode Printer Name</label><input type="text" value={printerName} onChange={(e) => setPrinterName(e.target.value)} placeholder="TSC TE244" className="w-full border-2 border-gray-400 p-2 rounded font-bold text-lg" /></div>
-          <button onClick={() => { localStorage.setItem('server_ip', serverIP); localStorage.setItem('barcode_printer', printerName); setIsSettingUp(false); }} className="w-full bg-green-600 text-white font-bold py-3 rounded hover:bg-green-700 shadow-md">Save & Connect</button>
+          <div className="mb-4"><label className="font-bold text-gray-700">Master Server IP Address</label><input type="text" value={serverIP} onChange={(e) => setServerIP(e.target.value)} placeholder="192.168.1.50" className="w-full border-2 border-blue-400 p-2 rounded font-bold text-lg bg-blue-50" /></div>
+          <div className="mb-6"><label className="font-bold text-gray-700">Barcode Printer Name</label><input type="text" value={printerName} onChange={(e) => setPrinterName(e.target.value)} placeholder="TSC TE244" className="w-full border-2 border-gray-400 p-2 rounded font-bold text-lg" /></div>
+          <button onClick={() => { localStorage.setItem('server_ip', serverIP); localStorage.setItem('barcode_printer', printerName); setIsSettingUp(false); }} className="w-full bg-green-600 text-white font-bold py-3 rounded hover:bg-green-700">Save & Connect</button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-gray-100 font-sans text-sm overflow-hidden p-2">
+    <div className="h-screen w-screen flex flex-col bg-gray-100 font-sans text-sm overflow-hidden relative">
       
-      {/* HIDDEN PRINT LAYOUT (Optimized for TSC Printers) */}
+      {/* LOADING OVERLAY (Prevents clicks during print) */}
+      {isPrinting && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-white p-8 rounded shadow-2xl text-center">
+            <h2 className="text-2xl font-bold text-blue-900 mb-2">🖨️ Printing Barcodes...</h2>
+            <p className="text-gray-600">Sending absolute data to {printerName}. Please wait.</p>
+          </div>
+        </div>
+      )}
+
+      {/* HIDDEN PRINT DOM */}
       <div id="printable-barcode" className="hidden print:flex flex-col">
         {printQueue.map((p, idx) => (
-          Array.from({ length: p.qty }).map((_, i) => (
+          Array.from({ length: parseInt(p.qty) || 1 }).map((_, i) => (
             <div key={`${idx}-${i}`} className="barcode-page">
               <div className="font-bold text-[10px] uppercase leading-none mb-1 text-center w-full truncate text-black">Pushpanjali Fashion</div>
               <Barcode value={p.barcode} format="CODE128" width={1.5} height={25} fontSize={12} fontOptions="bold" margin={0} displayValue={true} />
@@ -238,202 +201,107 @@ export default function App() {
         ))}
       </div>
 
-      {/* SUPPLIER MODAL */}
-      {showSupplierModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-2xl w-[600px] flex overflow-hidden h-[400px]">
-            <div className="w-1/2 bg-gray-100 border-r p-4 flex flex-col">
-              <h3 className="font-bold text-gray-700 border-b pb-2 mb-2">Select Existing</h3>
-              <div className="flex-1 overflow-y-auto">
-                {supplierList.map((s, i) => (
-                  <div key={i} onClick={() => selectSupplier(s)} className="p-2 border-b cursor-pointer hover:bg-blue-100 font-bold text-blue-900">{s}</div>
-                ))}
-              </div>
-            </div>
-            <div className="w-1/2 p-6 flex flex-col">
-              <h3 className="font-bold text-blue-900 border-b pb-2 mb-4">Search / Add New</h3>
-              <input autoFocus type="text" value={supplierSearch} onChange={e => setSupplierSearch(e.target.value)} onKeyDown={handleSupplierKeyDown} placeholder="Type name & hit Enter..." className="w-full border-2 border-blue-400 p-3 rounded font-bold mb-4 bg-blue-50 outline-none" />
-              <button onClick={handleAddSupplier} className="bg-blue-600 text-white font-bold py-2 rounded hover:bg-blue-700">Add & Select</button>
-              <button onClick={() => setShowSupplierModal(false)} className="mt-auto bg-gray-300 text-gray-800 font-bold py-2 rounded hover:bg-gray-400">Cancel</button>
-            </div>
-          </div>
+      {/* HEADER TABS */}
+      <div className="bg-blue-900 text-white p-2 flex justify-between items-center shadow">
+        <div className="flex gap-4">
+          <button onClick={() => setActiveTab('ENTRY')} className={`px-6 py-2 font-bold rounded ${activeTab === 'ENTRY' ? 'bg-white text-blue-900 shadow' : 'bg-blue-800 hover:bg-blue-700'}`}>📥 Stock In & Print</button>
+          <button onClick={() => setActiveTab('INVENTORY')} className={`px-6 py-2 font-bold rounded ${activeTab === 'INVENTORY' ? 'bg-white text-blue-900 shadow' : 'bg-blue-800 hover:bg-blue-700'}`}>📊 Inventory Master</button>
         </div>
-      )}
-
-      {/* SIZE MATRIX RULE MODAL */}
-      {showSizeModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-lg shadow-2xl w-[450px] border-4 border-purple-600">
-            <h2 className="font-extrabold text-xl text-center border-b pb-2 mb-4 text-purple-900">📏 Set Auto-Size Rule</h2>
-            <p className="text-xs text-gray-500 text-center mb-4">This rule will apply every time you click "Add to List". Qty & Base MRP will be pulled from the left form.</p>
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div><label className="text-xs font-bold text-gray-600">Start Size</label><input type="number" value={sizeRule.startSize} onChange={e => setSizeRule({...sizeRule, startSize: e.target.value})} placeholder="32" className="w-full border-2 p-2 rounded mt-1 font-bold outline-none focus:border-purple-500" /></div>
-              <div><label className="text-xs font-bold text-gray-600">End Size</label><input type="number" value={sizeRule.endSize} onChange={e => setSizeRule({...sizeRule, endSize: e.target.value})} placeholder="40" className="w-full border-2 p-2 rounded mt-1 font-bold outline-none focus:border-purple-500" /></div>
-              <div><label className="text-xs font-bold text-gray-600">Size Step</label><input type="number" value={sizeRule.sizeStep} onChange={e => setSizeRule({...sizeRule, sizeStep: e.target.value})} className="w-full border-2 p-2 rounded mt-1 font-bold text-blue-700 bg-blue-50 outline-none focus:border-blue-500" /></div>
-              <div><label className="text-xs font-bold text-gray-600">Price Increase (Per Size)</label><input type="number" value={sizeRule.priceInc} onChange={e => setSizeRule({...sizeRule, priceInc: e.target.value})} placeholder="+10" className="w-full border-2 p-2 rounded mt-1 font-bold text-green-700 bg-green-50 outline-none focus:border-green-500" /></div>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => setShowSizeModal(false)} className="flex-1 bg-gray-300 py-2 rounded font-bold hover:bg-gray-400">Cancel</button>
-              <button onClick={saveSizeRule} className="flex-[2] bg-purple-700 text-white py-2 rounded font-bold hover:bg-purple-800">Save & Activate Rule</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* STOCK REPORT */}
-      {showStockReport && (
-        <div className="fixed inset-0 bg-white z-50 flex flex-col">
-          <div className="flex justify-between items-center bg-blue-900 text-white p-3 shadow z-10">
-            <h1 className="text-xl font-bold">📊 Complete Stock Report</h1>
-            <button onClick={() => setShowStockReport(false)} className="bg-red-500 px-4 py-1.5 rounded font-bold hover:bg-red-600 shadow">Close Report</button>
-          </div>
-          
-          <div className="bg-gray-100 border-b p-3 flex gap-4 items-center shadow-sm z-10">
-            <span className="font-bold text-gray-600">Filters:</span>
-            <select value={reportFilters.category} onChange={e => setReportFilters({...reportFilters, category: e.target.value})} className="border p-2 rounded font-bold text-sm outline-none"><option value="ALL">All Heads</option><option>Mens</option><option>Girls</option><option>Boys</option><option>Saree</option></select>
-            <input type="text" placeholder="Filter Brand..." value={reportFilters.brand} onChange={e => setReportFilters({...reportFilters, brand: e.target.value})} className="border p-2 rounded w-32 outline-none" />
-            <input type="text" placeholder="Filter Supplier..." value={reportFilters.supplier} onChange={e => setReportFilters({...reportFilters, supplier: e.target.value})} className="border p-2 rounded w-40 outline-none" />
-            <input type="text" placeholder="Search Item or Barcode..." value={reportFilters.search} onChange={e => setReportFilters({...reportFilters, search: e.target.value})} className="border-2 border-blue-300 p-2 rounded flex-1 bg-white font-bold outline-none focus:border-blue-500" />
-            <div className="font-bold text-blue-900 bg-blue-100 px-4 py-2 rounded border border-blue-300">Found: {reportData.length}</div>
-          </div>
-
-          <div className="flex-1 overflow-auto bg-gray-50 p-2">
-            <table className="w-full text-left text-sm border-collapse bg-white shadow-sm border">
-              <thead className="bg-gray-200 sticky top-0 font-bold border-b-2">
-                <tr><th className="p-2 border-r">Main Head</th><th className="p-2 border-r">Goods Name</th><th className="p-2 border-r">Brand</th><th className="p-2 border-r">Size</th><th className="p-2 border-r">Supplier</th><th className="p-2 border-r">Barcode</th><th className="p-2 border-r text-right">MRP</th><th className="p-2 text-center">In Stock</th></tr>
-              </thead>
-              <tbody>
-                {reportData.map((inv, i) => (
-                  <tr key={i} className="border-b hover:bg-yellow-50">
-                    <td className="p-2 border-r font-bold text-gray-600">{inv.category}</td><td className="p-2 border-r font-bold text-blue-900">{inv.name}</td>
-                    <td className="p-2 border-r">{inv.brand}</td><td className="p-2 border-r font-bold">{inv.size}</td><td className="p-2 border-r text-xs text-gray-600">{inv.supplierName}</td>
-                    <td className="p-2 border-r font-mono">{inv.barcode}</td><td className="p-2 border-r text-right font-bold text-green-700">₹{inv.price}</td><td className="p-2 text-center font-bold text-red-600">{inv.qty}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* --- TOP BAR: SUPPLIER INFO --- */}
-      <div className="bg-white border border-gray-300 p-2 shadow-sm flex items-center gap-4 mb-2 z-10 relative">
-        <span className="font-bold text-gray-700 w-24">Supplier Name</span>
-        <div onClick={() => setShowSupplierModal(true)} className="border-2 border-blue-400 p-1.5 w-64 bg-blue-50 cursor-pointer font-bold text-blue-900 flex justify-between items-center rounded">
-          {supplier.name ? supplier.name : <span className="text-gray-400 font-normal">Click to select...</span>} <span className="text-xs">🔍</span>
-        </div>
-        <span className="font-bold text-gray-700">LR No</span><input type="text" value={supplier.lrNo} onChange={e => handleSupplierChange(e, 'lrNo')} className="border p-1.5 w-32 focus:bg-yellow-50 rounded outline-none" />
-        <span className="font-bold text-gray-700">Purchase BillNo</span><input type="text" value={supplier.billNo} onChange={e => handleSupplierChange(e, 'billNo')} className="border p-1.5 w-32 focus:bg-yellow-50 rounded outline-none" />
-        <span className="font-bold text-gray-700">Date</span><input type="date" value={supplier.date} onChange={e => handleSupplierChange(e, 'date')} className="border p-1.5 rounded outline-none" />
-        <div className="ml-auto flex gap-2">
-          <button onClick={() => setIsSettingUp(true)} className="bg-gray-800 text-white px-3 py-1.5 rounded font-bold shadow-sm hover:bg-black">⚙️ Setup</button>
-        </div>
+        <button onClick={() => setIsSettingUp(true)} className="bg-gray-800 px-4 py-1.5 rounded font-bold hover:bg-black text-xs">⚙️ Setup</button>
       </div>
 
-      <div className="flex flex-1 gap-2 min-h-0 relative z-0">
-        
-        {/* LEFT COLUMN: ITEM FORM */}
-        <div className="w-[350px] bg-white border border-gray-300 shadow-sm p-3 flex flex-col gap-2 overflow-y-auto z-10 relative">
-          <div className="flex gap-2"><span className="w-24 font-bold text-gray-700 mt-1">Main Head</span><select value={item.category} onChange={e => handleItemChange(e, 'category')} className="flex-1 border p-1 rounded outline-none focus:border-blue-500"><option>Mens</option><option>Girls</option><option>Boys</option><option>Saree</option></select></div>
-          <div className="flex gap-2 mt-2"><span className="w-24 font-bold text-blue-900 mt-1">Goods Name*</span><input id="goodsNameInput" type="text" value={item.name} onChange={e => handleItemChange(e, 'name')} placeholder="Required" className="flex-1 border-2 border-blue-400 p-1.5 font-bold focus:bg-yellow-50 rounded bg-blue-50 outline-none" /></div>
-          <div className="flex gap-2"><span className="w-24 font-bold text-gray-700 mt-1">Barcode</span><input type="text" value={item.barcode} onChange={e => handleItemChange(e, 'barcode')} placeholder="Blank = Auto" className="flex-1 border-2 border-gray-400 p-1.5 font-mono font-bold focus:bg-yellow-50 rounded outline-none focus:border-blue-500" /></div>
-          <div className="flex gap-2"><span className="w-24 font-bold text-gray-700 mt-1">Brand</span><input type="text" value={item.brand} onChange={e => handleItemChange(e, 'brand')} placeholder="Optional" className="flex-1 border p-1.5 focus:bg-yellow-50 rounded outline-none focus:border-blue-500" /></div>
+      {/* TAB 1: STOCK ENTRY */}
+      {activeTab === 'ENTRY' && (
+        <div className="flex flex-col flex-1 p-2 gap-2 overflow-hidden">
           
-          <div className="flex gap-2 items-center">
-            <span className="w-24 font-bold text-gray-700">Size</span>
-            {sizeRule.isActive ? (
-              <div className="flex-1 bg-purple-100 border-2 border-purple-400 p-1 rounded flex justify-between items-center shadow-inner">
-                <span className="text-xs font-bold text-purple-900 ml-1">Rule: {sizeRule.startSize}-{sizeRule.endSize} (+₹{sizeRule.priceInc})</span>
-                <button onClick={() => setSizeRule({...sizeRule, isActive: false})} className="bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center font-bold text-xs hover:bg-red-600">X</button>
-              </div>
-            ) : (
-              <input type="text" value={item.size} onChange={e => handleItemChange(e, 'size')} className="flex-1 border p-1.5 focus:bg-yellow-50 uppercase rounded outline-none focus:border-blue-500" />
-            )}
-            <button onClick={() => setShowSizeModal(true)} className="bg-purple-100 border border-purple-400 text-purple-800 font-bold px-2 py-1.5 rounded shadow-sm hover:bg-purple-200" title="Set Auto-Size Rule">📏 Rules</button>
+          <div className="bg-white border border-gray-300 p-2 shadow-sm flex items-center gap-4 rounded">
+            <span className="font-bold text-gray-700">Supplier</span><input type="text" value={supplier.name} onChange={e => setSupplier({ ...supplier, name: e.target.value })} className="border p-1.5 w-64 rounded bg-yellow-50 outline-none focus:border-blue-500" placeholder="Type supplier name..." />
+            <span className="font-bold text-gray-700">Bill No</span><input type="text" value={supplier.billNo} onChange={e => setSupplier({ ...supplier, billNo: e.target.value })} className="border p-1.5 w-32 rounded outline-none" />
+            <span className="font-bold text-gray-700">Date</span><input type="date" value={supplier.date} onChange={e => setSupplier({ ...supplier, date: e.target.value })} className="border p-1.5 rounded outline-none" />
           </div>
-          
-          <div className="border-t-2 border-gray-300 my-2"></div>
-          
-          <div className="flex gap-2"><span className="w-24 font-bold text-gray-700 mt-1">Pur Price</span><input type="number" value={item.purPrice} onChange={e => handleItemChange(e, 'purPrice')} className="flex-1 border p-1.5 focus:bg-yellow-50 rounded outline-none focus:border-blue-500" /></div>
-          <div className="flex gap-2"><span className="w-24 font-bold text-green-700 mt-1">MRP *</span><input type="number" value={item.mrp} onChange={e => handleItemChange(e, 'mrp')} className="flex-1 border-2 border-green-500 p-1.5 font-bold bg-green-50 rounded outline-none focus:border-green-600" /></div>
-          <div className="flex gap-2"><span className="w-24 font-bold text-red-600 mt-1">Qty / Stock*</span><input type="number" value={item.qty} onChange={e => handleItemChange(e, 'qty')} className="flex-1 border-2 border-red-500 p-1.5 font-bold bg-red-50 text-center text-lg rounded outline-none focus:border-red-600" /></div>
 
-          <div className="flex gap-2 mt-4">
-            <button onClick={addToStaging} className="flex-[2] bg-blue-100 text-blue-900 border-2 border-blue-400 font-bold py-2 shadow-sm hover:bg-blue-200 rounded">➕ Add to List</button>
-            <button onClick={() => { setItem({ ...item, barcode: '', name: '', purPrice: '', mrp: '', qty: '1' }); setSizeRule({...sizeRule, isActive: false}); }} className="flex-1 bg-gray-200 border border-gray-400 py-2 hover:bg-gray-300 font-bold text-gray-700 rounded">Clear</button>
+          <div className="flex gap-2 bg-white border border-gray-300 p-3 shadow-sm rounded items-end">
+            <div className="flex flex-col"><label className="font-bold text-gray-600 text-xs">Head</label><select value={item.category} onChange={e => handleItemChange(e, 'category')} className="border p-1.5 rounded outline-none"><option>Mens</option><option>Girls</option><option>Boys</option><option>Saree</option></select></div>
+            <div className="flex flex-col flex-1"><label className="font-bold text-blue-900 text-xs">Goods Name *</label><input type="text" value={item.name} onChange={e => handleItemChange(e, 'name')} className="border-2 border-blue-400 p-1.5 rounded bg-blue-50 outline-none" /></div>
+            <div className="flex flex-col w-32"><label className="font-bold text-gray-600 text-xs">Barcode (Auto)</label><input type="text" value={item.barcode} onChange={e => handleItemChange(e, 'barcode')} placeholder="Blank=Auto" className="border-2 border-gray-400 p-1.5 rounded font-mono font-bold outline-none" /></div>
+            <div className="flex flex-col w-24"><label className="font-bold text-gray-600 text-xs">Brand</label><input type="text" value={item.brand} onChange={e => handleItemChange(e, 'brand')} className="border p-1.5 rounded outline-none" /></div>
+            <div className="flex flex-col w-20"><label className="font-bold text-gray-600 text-xs">Size</label><input type="text" value={item.size} onChange={e => handleItemChange(e, 'size')} className="border p-1.5 rounded uppercase outline-none" /></div>
+            <div className="flex flex-col w-24"><label className="font-bold text-gray-600 text-xs">Pur Price</label><input type="number" value={item.purPrice} onChange={e => handleItemChange(e, 'purPrice')} className="border p-1.5 rounded outline-none" /></div>
+            <div className="flex flex-col w-24"><label className="font-bold text-green-700 text-xs">MRP *</label><input type="number" value={item.mrp} onChange={e => handleItemChange(e, 'mrp')} className="border-2 border-green-500 p-1.5 rounded bg-green-50 font-bold outline-none" /></div>
+            <div className="flex flex-col w-20"><label className="font-bold text-red-600 text-xs">Qty *</label><input type="number" value={item.qty} onChange={e => handleItemChange(e, 'qty')} className="border-2 border-red-500 p-1.5 rounded bg-red-50 text-center font-bold outline-none" /></div>
+            <button onClick={addToStaging} className="bg-blue-600 text-white font-bold py-1.5 px-6 rounded shadow hover:bg-blue-700 h-9">Add Item</button>
           </div>
-        </div>
 
-        {/* MIDDLE AREA: EXCEL-STYLE EDITABLE TABLE */}
-        <div className="flex-1 bg-white border border-gray-300 shadow-sm flex flex-col overflow-hidden z-10 relative">
-          <div className={`p-2 border-b flex justify-between items-center ${isEditMode ? 'bg-orange-200 border-orange-400' : 'bg-gray-200'}`}>
-            <span className="font-extrabold text-gray-800 text-base">
-              {isEditMode ? `🔍 Live Master Database (Click cell to edit)` : `📋 Temporary Staging List (Click cell to edit)`}
-            </span>
-            <div className="flex items-center gap-4">
-              {dirtyCount > 0 && isEditMode && (<span className="bg-red-100 text-red-800 px-2 py-1 rounded font-bold text-xs border border-red-300 animate-pulse">⚠️ {dirtyCount} Unsaved Edits</span>)}
-              <label className="flex items-center gap-2 font-bold text-red-700 cursor-pointer bg-white px-4 py-1.5 border-2 border-red-400 rounded shadow-sm hover:bg-red-50 transition-colors">
-                <input type="checkbox" checked={isEditMode} onChange={(e) => { setIsEditMode(e.target.checked); if(!e.target.checked) fetchLiveStock(); }} className="w-5 h-5 cursor-pointer" /> Edit / Delete? (Live Search)
-              </label>
+          <div className="flex-1 bg-white border border-gray-300 shadow-sm rounded flex flex-col overflow-hidden">
+            <div className="p-2 bg-gray-200 border-b font-bold text-gray-700">📋 Unsaved Staging List ({staging.length} Items)</div>
+            <div className="flex-1 overflow-y-auto">
+              <table className="w-full text-left border-collapse text-sm">
+                <thead className="bg-gray-100 sticky top-0 font-bold border-b-2">
+                  <tr><th className="p-2 border-r w-12 text-center">Sr</th><th className="p-2 border-r">Goods Name</th><th className="p-2 border-r w-24">Brand</th><th className="p-2 border-r w-16">Size</th><th className="p-2 border-r w-24">MRP</th><th className="p-2 border-r w-24">Pur Price</th><th className="p-2 border-r w-32">Barcode</th><th className="p-2 border-r w-16 text-center">Qty</th><th className="p-2 text-center w-12">Del</th></tr>
+                </thead>
+                <tbody>
+                  {staging.map((stg, idx) => (
+                    <tr key={idx} className="border-b hover:bg-yellow-50">
+                      <td className="p-2 border-r text-center font-bold text-gray-500">{idx + 1}</td>
+                      <td className="p-1 border-r"><input className={inputClass} value={stg.name} onChange={e => updateStagingRow(idx, 'name', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input className={inputClass} value={stg.brand} onChange={e => updateStagingRow(idx, 'brand', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input className={inputClass} value={stg.size} onChange={e => updateStagingRow(idx, 'size', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input type="number" className={`${inputClass} text-green-700`} value={stg.mrp} onChange={e => updateStagingRow(idx, 'mrp', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input type="number" className={inputClass} value={stg.purPrice} onChange={e => updateStagingRow(idx, 'purPrice', e.target.value)} /></td>
+                      <td className="p-2 border-r font-mono text-purple-700 bg-gray-50">{stg.barcode}</td>
+                      <td className="p-1 border-r"><input type="number" className={`${inputClass} text-center text-red-600`} value={stg.qty} onChange={e => updateStagingRow(idx, 'qty', e.target.value)} /></td>
+                      <td className="p-2 text-center"><button onClick={() => setStaging(staging.filter((_, i) => i !== idx))} className="text-red-500 font-bold">❌</button></td>
+                    </tr>
+                  ))}
+                  {staging.length === 0 && <tr><td colSpan="9" className="p-8 text-center text-gray-400 font-bold">List is empty. Use the form above to add items.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div className="bg-gray-200 border-t p-3 flex gap-4">
+              <button onClick={() => saveBatch(false)} className="bg-white border-2 border-gray-400 font-bold py-2.5 px-8 rounded shadow-sm hover:bg-gray-100">💾 Save to Master Only</button>
+              <button onClick={() => saveBatch(true)} className="bg-green-700 text-white border-2 border-green-900 font-bold py-2.5 px-8 rounded shadow-sm hover:bg-green-600">🖨️ Save & Print Barcodes</button>
             </div>
           </div>
+        </div>
+      )}
 
-          <div className="flex-1 overflow-y-auto relative">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead className="bg-gray-100 sticky top-0 font-bold border-b-2 border-gray-400 z-10">
-                <tr>
-                  <th className="p-2 border-r w-12 text-center">Sr</th><th className="p-2 border-r">Goods Name</th><th className="p-2 border-r w-24">Brand</th><th className="p-2 border-r w-16">Size</th>
-                  <th className="p-2 border-r w-24">Sale Price</th><th className="p-2 border-r w-24">Pur Price</th><th className="p-2 border-r w-32">Barcode</th>
-                  {isEditMode && <th className="p-2 border-r w-24">Supplier</th>}
-                  <th className="p-2 border-r w-16 text-center">Qty</th><th className="p-2 text-center w-12">Del</th>
-                </tr>
-              </thead>
-              <tbody>
-                {!isEditMode && staging.map((stg, idx) => (
-                  <tr key={idx} className="border-b border-gray-200 hover:bg-yellow-50">
-                    <td className="p-2 border-r text-center font-bold text-gray-500">{idx + 1}</td>
-                    <td className="p-1 border-r"><input className={inputClass} value={stg.name} onChange={e => updateStagingRow(idx, 'name', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input className={inputClass} value={stg.brand} onChange={e => updateStagingRow(idx, 'brand', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input className={inputClass} value={stg.size} onChange={e => updateStagingRow(idx, 'size', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input type="number" className={`${inputClass} text-green-700`} value={stg.mrp} onChange={e => updateStagingRow(idx, 'mrp', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input type="number" className={inputClass} value={stg.purPrice} onChange={e => updateStagingRow(idx, 'purPrice', e.target.value)} /></td>
-                    <td className="p-2 border-r font-mono font-bold text-purple-700 bg-gray-50">{stg.barcode}</td>
-                    <td className="p-1 border-r"><input type="number" className={`${inputClass} text-center text-red-600`} value={stg.qty} onChange={e => updateStagingRow(idx, 'qty', e.target.value)} /></td>
-                    <td className="p-2 text-center"><button onClick={() => setStaging(staging.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700 font-bold">❌</button></td>
-                  </tr>
-                ))}
-                
-                {isEditMode && filteredLiveStock.map((inv, idx) => (
-                  <tr key={idx} className={`border-b border-gray-200 hover:bg-orange-50 ${dirtyEdits[inv.barcode] ? 'bg-orange-100' : 'bg-white'}`}>
-                    <td className="p-2 border-r text-center text-gray-500">{idx + 1}</td>
-                    <td className="p-1 border-r"><input className={inputClass} value={inv.name} onChange={e => updateLiveRow(inv.barcode, 'name', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input className={inputClass} value={inv.brand} onChange={e => updateLiveRow(inv.barcode, 'brand', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input className={inputClass} value={inv.size} onChange={e => updateLiveRow(inv.barcode, 'size', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input type="number" className={`${inputClass} text-green-700`} value={inv.price} onChange={e => updateLiveRow(inv.barcode, 'price', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input type="number" className={inputClass} value={inv.purchasePrice} onChange={e => updateLiveRow(inv.barcode, 'purchasePrice', e.target.value)} /></td>
-                    <td className="p-2 border-r font-mono text-blue-700 bg-gray-50">{inv.barcode}</td>
-                    <td className="p-1 border-r"><input className={inputClass} value={inv.supplierName} onChange={e => updateLiveRow(inv.barcode, 'supplierName', e.target.value)} /></td>
-                    <td className="p-1 border-r"><input type="number" className={`${inputClass} text-center font-bold`} value={inv.qty} onChange={e => updateLiveRow(inv.barcode, 'qty', e.target.value)} /></td>
-                    <td className="p-1 text-center"><button onClick={() => deleteLiveItem(inv.barcode)} className="text-red-500 hover:text-red-700 font-bold">❌</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {/* TAB 2: INVENTORY MASTER */}
+      {activeTab === 'INVENTORY' && (
+        <div className="flex flex-col flex-1 p-2 gap-2 overflow-hidden">
+          <div className="bg-white border border-gray-300 p-3 shadow-sm rounded flex items-center gap-4">
+            <span className="font-bold text-gray-700">🔍 Search Master Database:</span>
+            <input autoFocus type="text" value={reportSearch} onChange={e => setReportSearch(e.target.value)} placeholder="Type name, barcode, or supplier..." className="border-2 border-blue-400 p-2 rounded flex-1 bg-blue-50 font-bold outline-none" />
+            <div className="font-bold text-blue-900 bg-blue-100 px-4 py-2 rounded border border-blue-300">Found: {filteredInventory.length}</div>
+            {Object.keys(dirtyEdits).length > 0 && <button onClick={saveLiveEdits} className="bg-orange-600 text-white px-6 py-2 rounded font-bold shadow animate-pulse">💾 Save {Object.keys(dirtyEdits).length} Edits</button>}
           </div>
 
-          <div className="bg-gray-200 border-t-2 border-gray-400 p-3 flex items-center justify-between z-10">
-            <div className="flex gap-4">
-              {!isEditMode ? (
-                <><button onClick={() => handleStockIn(false)} className="bg-white border-2 border-gray-400 font-bold py-2.5 px-8 hover:bg-gray-100 shadow-sm text-gray-800 rounded">💾 Stock In Only</button>
-                  <button onClick={() => handleStockIn(true)} className="bg-green-700 text-white border-2 border-green-900 font-bold py-2.5 px-8 shadow-sm hover:bg-green-600 rounded">🖨️ Print & Stock In</button></>
-              ) : (
-                <button onClick={saveSafeEdits} className="bg-orange-600 text-white border-2 border-orange-800 font-bold py-2.5 px-8 shadow-sm hover:bg-orange-700 rounded transition-colors">💾 Save Edits to Database</button>
-              )}
+          <div className="flex-1 bg-white border border-gray-300 shadow-sm rounded flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto">
+              <table className="w-full text-left border-collapse text-sm">
+                <thead className="bg-gray-200 sticky top-0 font-bold border-b-2">
+                  <tr><th className="p-2 border-r">Goods Name</th><th className="p-2 border-r w-24">Brand</th><th className="p-2 border-r w-16">Size</th><th className="p-2 border-r w-24">Supplier</th><th className="p-2 border-r w-24">MRP</th><th className="p-2 border-r w-32">Barcode</th><th className="p-2 border-r w-16 text-center">In Stock</th><th className="p-2 text-center w-12">Del</th></tr>
+                </thead>
+                <tbody>
+                  {filteredInventory.map((inv, idx) => (
+                    <tr key={idx} className={`border-b border-gray-200 hover:bg-orange-50 ${dirtyEdits[inv.barcode] ? 'bg-orange-100' : 'bg-white'}`}>
+                      <td className="p-1 border-r"><input className={inputClass} value={inv.name} onChange={e => updateLiveRow(inv.barcode, 'name', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input className={inputClass} value={inv.brand} onChange={e => updateLiveRow(inv.barcode, 'brand', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input className={inputClass} value={inv.size} onChange={e => updateLiveRow(inv.barcode, 'size', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input className={inputClass} value={inv.supplierName} onChange={e => updateLiveRow(inv.barcode, 'supplierName', e.target.value)} /></td>
+                      <td className="p-1 border-r"><input type="number" className={`${inputClass} text-green-700`} value={inv.price} onChange={e => updateLiveRow(inv.barcode, 'price', e.target.value)} /></td>
+                      <td className="p-2 border-r font-mono text-blue-700 bg-gray-50">{inv.barcode}</td>
+                      <td className="p-1 border-r"><input type="number" className={`${inputClass} text-center font-bold`} value={inv.qty} onChange={e => updateLiveRow(inv.barcode, 'qty', e.target.value)} /></td>
+                      <td className="p-2 text-center"><button onClick={() => deleteLiveItem(inv.barcode)} className="text-red-500 font-bold hover:text-red-700">❌</button></td>
+                    </tr>
+                  ))}
+                  {filteredInventory.length === 0 && <tr><td colSpan="8" className="p-8 text-center text-gray-400 font-bold">No items found.</td></tr>}
+                </tbody>
+              </table>
             </div>
-            <button onClick={() => setShowStockReport(true)} className="bg-blue-800 text-white font-bold py-2.5 px-8 hover:bg-blue-900 shadow-sm rounded">📊 View Stock Report</button>
           </div>
         </div>
-      </div>
+      )}
+
     </div>
   );
 }
