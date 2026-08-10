@@ -25,9 +25,7 @@ export default function App() {
   // --- STICKY SIZE RULE STATE ---
   const [showSizeModal, setShowSizeModal] = useState(false);
   const [sizeRule, setSizeRule] = useState({
-    isActive: false, 
-    startSize: '', 
-    endSize: '', 
+    isActive: false, startSize: '', endSize: '', 
     sizeStep: localStorage.getItem('matrix_step') || '2', 
     priceInc: localStorage.getItem('matrix_inc') || '10'
   });
@@ -85,25 +83,29 @@ export default function App() {
   // --- SIZE RULE HANDLER ---
   const saveSizeRule = () => {
     if (!sizeRule.startSize || !sizeRule.endSize) return alert("Start and End sizes are required!");
+    if (parseInt(sizeRule.startSize) > parseInt(sizeRule.endSize)) return alert("Start size cannot be greater than end size!");
     localStorage.setItem('matrix_step', sizeRule.sizeStep);
     localStorage.setItem('matrix_inc', sizeRule.priceInc);
     setSizeRule({ ...sizeRule, isActive: true });
     setShowSizeModal(false);
   };
 
-  // --- ADD TO STAGING ---
+  // --- ADD TO STAGING (WITH FREEZE FAILSAFE) ---
   const addToStaging = () => {
     if (!item.name || !item.mrp) return alert("Goods Name and MRP are strictly required!");
 
     if (sizeRule.isActive) {
-      // APPLY THE SIZE MATRIX AUTOMATICALLY
       let currentSize = parseInt(sizeRule.startSize);
       const endSize = parseInt(sizeRule.endSize);
-      const step = parseInt(sizeRule.sizeStep);
-      let currentMrp = parseFloat(item.mrp); // From main form
-      let currentPur = parseFloat(item.purPrice || 0); // From main form
-      const priceInc = parseFloat(sizeRule.priceInc);
-      const qty = item.qty; // From main form
+      let step = parseInt(sizeRule.sizeStep);
+      
+      // THE FAILSAFE: Prevents the app from freezing in an infinite loop
+      if (isNaN(step) || step <= 0) step = 1; 
+
+      let currentMrp = parseFloat(item.mrp); 
+      let currentPur = parseFloat(item.purPrice || 0); 
+      const priceInc = parseFloat(sizeRule.priceInc || 0);
+      const qty = item.qty; 
 
       const generatedItems = [];
       while (currentSize <= endSize) {
@@ -118,7 +120,6 @@ export default function App() {
       setStaging([...staging, ...finalizedItems]);
 
     } else {
-      // STANDARD SINGLE ITEM ADDITION
       let finalBarcode = item.barcode.trim();
       if (finalBarcode === '') finalBarcode = generateNextBarcodes(1)[0];
       else {
@@ -128,7 +129,6 @@ export default function App() {
       setStaging([...staging, { ...item, barcode: finalBarcode, supplierName: supplier.name }]);
     }
     
-    // Clear barcode after adding, keep everything else
     setItem({ ...item, barcode: '' }); 
   };
 
@@ -225,14 +225,14 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-100 font-sans text-sm overflow-hidden p-2">
       
-      {/* HIDDEN PRINT LAYOUT */}
+      {/* HIDDEN PRINT LAYOUT (Optimized for TSC Printers) */}
       <div id="printable-barcode" className="hidden print:flex flex-col">
         {printQueue.map((p, idx) => (
           Array.from({ length: p.qty }).map((_, i) => (
             <div key={`${idx}-${i}`} className="barcode-page">
               <div className="font-bold text-[10px] uppercase leading-none mb-1 text-center w-full truncate text-black">Pushpanjali Fashion</div>
-              <Barcode value={p.barcode} format="CODE128" width={1.2} height={20} fontSize={10} margin={0} displayValue={true} />
-              <div className="font-bold text-[13px] leading-none mt-1 text-black">₹ {p.mrp}</div>
+              <Barcode value={p.barcode} format="CODE128" width={1.5} height={25} fontSize={12} fontOptions="bold" margin={0} displayValue={true} />
+              <div className="font-bold text-[14px] leading-none mt-1 text-black">₹ {p.mrp}</div>
             </div>
           ))
         ))}
@@ -267,13 +267,13 @@ export default function App() {
             <h2 className="font-extrabold text-xl text-center border-b pb-2 mb-4 text-purple-900">📏 Set Auto-Size Rule</h2>
             <p className="text-xs text-gray-500 text-center mb-4">This rule will apply every time you click "Add to List". Qty & Base MRP will be pulled from the left form.</p>
             <div className="grid grid-cols-2 gap-4 mb-6">
-              <div><label className="text-xs font-bold text-gray-600">Start Size</label><input type="number" value={sizeRule.startSize} onChange={e => setSizeRule({...sizeRule, startSize: e.target.value})} placeholder="32" className="w-full border-2 p-2 rounded mt-1 font-bold outline-none" /></div>
-              <div><label className="text-xs font-bold text-gray-600">End Size</label><input type="number" value={sizeRule.endSize} onChange={e => setSizeRule({...sizeRule, endSize: e.target.value})} placeholder="40" className="w-full border-2 p-2 rounded mt-1 font-bold outline-none" /></div>
-              <div><label className="text-xs font-bold text-gray-600">Size Step</label><input type="number" value={sizeRule.sizeStep} onChange={e => setSizeRule({...sizeRule, sizeStep: e.target.value})} className="w-full border-2 p-2 rounded mt-1 font-bold text-blue-700 bg-blue-50 outline-none" /></div>
-              <div><label className="text-xs font-bold text-gray-600">Price Increase (Per Size)</label><input type="number" value={sizeRule.priceInc} onChange={e => setSizeRule({...sizeRule, priceInc: e.target.value})} placeholder="+10" className="w-full border-2 p-2 rounded mt-1 font-bold text-green-700 bg-green-50 outline-none" /></div>
+              <div><label className="text-xs font-bold text-gray-600">Start Size</label><input type="number" value={sizeRule.startSize} onChange={e => setSizeRule({...sizeRule, startSize: e.target.value})} placeholder="32" className="w-full border-2 p-2 rounded mt-1 font-bold outline-none focus:border-purple-500" /></div>
+              <div><label className="text-xs font-bold text-gray-600">End Size</label><input type="number" value={sizeRule.endSize} onChange={e => setSizeRule({...sizeRule, endSize: e.target.value})} placeholder="40" className="w-full border-2 p-2 rounded mt-1 font-bold outline-none focus:border-purple-500" /></div>
+              <div><label className="text-xs font-bold text-gray-600">Size Step</label><input type="number" value={sizeRule.sizeStep} onChange={e => setSizeRule({...sizeRule, sizeStep: e.target.value})} className="w-full border-2 p-2 rounded mt-1 font-bold text-blue-700 bg-blue-50 outline-none focus:border-blue-500" /></div>
+              <div><label className="text-xs font-bold text-gray-600">Price Increase (Per Size)</label><input type="number" value={sizeRule.priceInc} onChange={e => setSizeRule({...sizeRule, priceInc: e.target.value})} placeholder="+10" className="w-full border-2 p-2 rounded mt-1 font-bold text-green-700 bg-green-50 outline-none focus:border-green-500" /></div>
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setShowSizeModal(false)} className="flex-1 bg-gray-300 py-2 rounded font-bold">Cancel</button>
+              <button onClick={() => setShowSizeModal(false)} className="flex-1 bg-gray-300 py-2 rounded font-bold hover:bg-gray-400">Cancel</button>
               <button onClick={saveSizeRule} className="flex-[2] bg-purple-700 text-white py-2 rounded font-bold hover:bg-purple-800">Save & Activate Rule</button>
             </div>
           </div>
@@ -333,7 +333,7 @@ export default function App() {
       <div className="flex flex-1 gap-2 min-h-0 relative z-0">
         
         {/* LEFT COLUMN: ITEM FORM */}
-        <div className="w-[350px] bg-white border border-gray-300 shadow-sm p-3 flex flex-col gap-2 overflow-y-auto">
+        <div className="w-[350px] bg-white border border-gray-300 shadow-sm p-3 flex flex-col gap-2 overflow-y-auto z-10 relative">
           <div className="flex gap-2"><span className="w-24 font-bold text-gray-700 mt-1">Main Head</span><select value={item.category} onChange={e => handleItemChange(e, 'category')} className="flex-1 border p-1 rounded outline-none focus:border-blue-500"><option>Mens</option><option>Girls</option><option>Boys</option><option>Saree</option></select></div>
           <div className="flex gap-2 mt-2"><span className="w-24 font-bold text-blue-900 mt-1">Goods Name*</span><input id="goodsNameInput" type="text" value={item.name} onChange={e => handleItemChange(e, 'name')} placeholder="Required" className="flex-1 border-2 border-blue-400 p-1.5 font-bold focus:bg-yellow-50 rounded bg-blue-50 outline-none" /></div>
           <div className="flex gap-2"><span className="w-24 font-bold text-gray-700 mt-1">Barcode</span><input type="text" value={item.barcode} onChange={e => handleItemChange(e, 'barcode')} placeholder="Blank = Auto" className="flex-1 border-2 border-gray-400 p-1.5 font-mono font-bold focus:bg-yellow-50 rounded outline-none focus:border-blue-500" /></div>
@@ -365,7 +365,7 @@ export default function App() {
         </div>
 
         {/* MIDDLE AREA: EXCEL-STYLE EDITABLE TABLE */}
-        <div className="flex-1 bg-white border border-gray-300 shadow-sm flex flex-col overflow-hidden">
+        <div className="flex-1 bg-white border border-gray-300 shadow-sm flex flex-col overflow-hidden z-10 relative">
           <div className={`p-2 border-b flex justify-between items-center ${isEditMode ? 'bg-orange-200 border-orange-400' : 'bg-gray-200'}`}>
             <span className="font-extrabold text-gray-800 text-base">
               {isEditMode ? `🔍 Live Master Database (Click cell to edit)` : `📋 Temporary Staging List (Click cell to edit)`}
