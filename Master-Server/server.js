@@ -47,7 +47,6 @@ function startServer() {
 
   loadDatabaseToRAM();
 
-  // Settings & Users & Khata
   serverApp.get('/api/settings', (req, res) => res.json(dbCache.settings));
   serverApp.post('/api/settings', (req, res) => { dbCache.settings = { ...dbCache.settings, ...req.body }; atomicSaveToDisk(); res.json({ success: true }); });
   serverApp.post('/api/login', (req, res) => { const user = dbCache.users.find(u => u.pin === req.body.pin); if (user) res.json({ success: true, user }); else res.json({ success: false, message: 'Invalid PIN' }); });
@@ -57,47 +56,30 @@ function startServer() {
   serverApp.get('/api/customers', (req, res) => res.json(dbCache.customers || []));
   serverApp.post('/api/customers/pay', (req, res) => { const { customerId, amountPaid } = req.body; const customer = dbCache.customers.find(c => c.id === customerId); if (customer) { customer.balance -= Number(amountPaid); customer.history.push({ date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), type: 'PAYMENT', amount: Number(amountPaid) }); atomicSaveToDisk(); res.json({ success: true, newBalance: customer.balance }); } else res.status(404).json({ error: "Customer not found" }); });
 
-  // INVENTORY
   serverApp.get('/api/inventory', (req, res) => res.json(dbCache.inventory));
   serverApp.get('/api/sales', (req, res) => res.json(dbCache.sales));
   serverApp.post('/api/inventory', (req, res) => {
-    const { barcode, name, category, qty, price, purchasePrice, brand, size, hsn } = req.body;
+    const { barcode, name, category, qty, price, purchasePrice, brand, size, hsn, supplierName } = req.body;
     const existing = dbCache.inventory.findIndex(item => item.barcode === barcode);
     if (existing >= 0) {
-      dbCache.inventory[existing].qty += Number(qty); dbCache.inventory[existing].price = Number(price); dbCache.inventory[existing].purchasePrice = Number(purchasePrice || 0); dbCache.inventory[existing].brand = brand || ''; dbCache.inventory[existing].size = size || ''; dbCache.inventory[existing].hsn = hsn || '';
+      dbCache.inventory[existing].qty += Number(qty); dbCache.inventory[existing].price = Number(price); dbCache.inventory[existing].purchasePrice = Number(purchasePrice || 0); dbCache.inventory[existing].brand = brand || ''; dbCache.inventory[existing].size = size || ''; dbCache.inventory[existing].hsn = hsn || ''; dbCache.inventory[existing].supplierName = supplierName || dbCache.inventory[existing].supplierName;
     } else {
-      dbCache.inventory.push({ barcode, name, category, qty: Number(qty), price: Number(price), purchasePrice: Number(purchasePrice || 0), brand: brand || '', size: size || '', hsn: hsn || '' });
+      dbCache.inventory.push({ barcode, name, category, qty: Number(qty), price: Number(price), purchasePrice: Number(purchasePrice || 0), brand: brand || '', size: size || '', hsn: hsn || '', supplierName: supplierName || '' });
     }
     atomicSaveToDisk(); res.json({ success: true });
   });
 
-  // BULK UPDATE FOR INLINE EXCEL EDITS
-  serverApp.put('/api/inventory/bulk', (req, res) => {
-    const { items } = req.body;
-    if (!items || !Array.isArray(items)) return res.status(400).json({ error: "No items provided" });
-    
-    items.forEach(updatedItem => {
-      const index = dbCache.inventory.findIndex(i => i.barcode === updatedItem.barcode);
-      if (index >= 0) {
-        dbCache.inventory[index] = { 
-          ...dbCache.inventory[index], 
-          name: updatedItem.name, 
-          brand: updatedItem.brand, 
-          size: updatedItem.size, 
-          qty: Number(updatedItem.qty), 
-          price: Number(updatedItem.price), 
-          purchasePrice: Number(updatedItem.purchasePrice || 0) 
-        };
-      }
-    });
-    
-    atomicSaveToDisk();
-    res.json({ success: true });
+  serverApp.put('/api/inventory/:barcode', (req, res) => {
+    const { name, category, qty, price, purchasePrice, brand, size, hsn, supplierName } = req.body;
+    const existing = dbCache.inventory.findIndex(item => item.barcode === req.params.barcode);
+    if (existing >= 0) {
+      dbCache.inventory[existing] = { ...dbCache.inventory[existing], name, category, qty: Number(qty), price: Number(price), purchasePrice: Number(purchasePrice || 0), brand, size, hsn, supplierName };
+      atomicSaveToDisk(); res.json({ success: true });
+    } else { res.status(404).json({ error: "Item not found" }); }
   });
 
   serverApp.delete('/api/inventory/:barcode', (req, res) => { dbCache.inventory = dbCache.inventory.filter(item => item.barcode !== req.params.barcode); atomicSaveToDisk(); res.json({ success: true }); });
 
-  // Checkout
   serverApp.post('/api/checkout', (req, res) => {
     const { cart, totalAmount, paymentMethod, cashierName, customerName, customerMobile, terminalId } = req.body;
     cart.forEach(cartItem => { if (cartItem.barcode) { const itemIndex = dbCache.inventory.findIndex(inv => inv.barcode === cartItem.barcode); if (itemIndex >= 0) dbCache.inventory[itemIndex].qty -= cartItem.qty; } });
