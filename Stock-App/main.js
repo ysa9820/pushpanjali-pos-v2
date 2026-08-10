@@ -17,7 +17,7 @@ app.whenReady().then(() => {
   win.loadFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// INTERCEPT SILENT PRINT REQUEST
+// INTERCEPT SILENT PRINT REQUEST & SEND ABSOLUTE SETTINGS
 ipcMain.on('print-silent', (event, printerName) => {
   win.webContents.print({ 
     silent: true, 
@@ -26,10 +26,11 @@ ipcMain.on('print-silent', (event, printerName) => {
     margins: { marginType: 'none' },
     printBackground: true,
     landscape: false,
-    // CRITICAL: Force the hardware to recognize a 50mm x 25mm label (measured in Microns)
-    pageSize: { width: 50000, height: 25000 } 
+    pageSize: { width: 50000, height: 25000 } // Absolute Size: 50mm x 25mm in microns
   }, (success, failureReason) => {
-    if (!success) console.error("Silent Print Failed:", failureReason);
+    // Send a message back to the app so it can remove the loading screen
+    event.reply('print-finished', success);
+    if (!success) console.error("Print Failed:", failureReason);
   });
 });
 
