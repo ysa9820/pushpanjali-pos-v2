@@ -6,10 +6,23 @@
     <title>Pushpanjali Stock Room</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+      /* Hide number arrows in Chrome/Safari/Edge */
+      input[type="number"]::-webkit-inner-spin-button, 
+      input[type="number"]::-webkit-outer-spin-button { 
+        -webkit-appearance: none; 
+        margin: 0; 
+      }
+      /* Hide number arrows in Firefox */
+      input[type="number"] { -moz-appearance: textfield; }
+
+      /* Strict Printing Rules for Thermal Barcode Printers */
       @media print {
+        @page { size: auto; margin: 0; }
         body * { visibility: hidden; }
         #printable-barcode, #printable-barcode * { visibility: visible; }
-        #printable-barcode { position: absolute; left: 0; top: 0; margin: 0; padding: 0; }
+        #printable-barcode { position: absolute; left: 0; top: 0; width: 100%; }
+        /* Forces page breaks between barcodes */
+        .barcode-page { page-break-after: always; overflow: hidden; }
       }
     </style>
   </head>
