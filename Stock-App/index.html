@@ -6,7 +6,6 @@
     <title>Pushpanjali Stock Room</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      /* Hide browser up/down arrows on number inputs */
       input[type="number"]::-webkit-inner-spin-button, 
       input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
       input[type="number"] { -moz-appearance: textfield; }
@@ -17,21 +16,15 @@
         body, html { width: 50mm; height: 25mm; background: white !important; margin: 0; padding: 0; }
         body > :not(#printable-barcode) { display: none !important; }
         
-        #printable-barcode { 
-          display: block !important; 
-          width: 100%; margin: 0; padding: 0; 
-        }
+        #printable-barcode { display: block !important; width: 100%; margin: 0; padding: 0; }
         
         .barcode-page { 
           width: 50mm; height: 25mm; 
           page-break-after: always; 
           page-break-inside: avoid;
-          display: flex !important; 
-          flex-direction: column !important; 
-          align-items: center !important; 
-          justify-content: center !important; 
-          overflow: hidden;
-          box-sizing: border-box;
+          display: flex !important; flex-direction: column !important; 
+          align-items: center !important; justify-content: center !important; 
+          overflow: hidden; box-sizing: border-box;
         }
         
         * { -webkit-print-color-adjust: exact !important; color-adjust: exact !important; color: black !important; }
