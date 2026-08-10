@@ -1,0 +1,33 @@
+name: Build Stock Room App
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Stock-App/**'
+      - '.github/workflows/build-stock.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out Git repository
+      uses: actions/checkout@v4
+
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Install Dependencies & Build
+      working-directory: ./Stock-App
+      run: |
+        npm install
+        npm run app:build
+
+    - name: Upload Stock App EXE
+      uses: actions/upload-artifact@v4
+      with:
+        name: Pushpanjali-Stock-Room
+        path: Stock-App/dist-electron/*.exe
