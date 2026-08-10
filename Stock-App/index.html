@@ -6,23 +6,40 @@
     <title>Pushpanjali Stock Room</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      /* Hide number arrows in Chrome/Safari/Edge */
+      /* Hide number arrows */
       input[type="number"]::-webkit-inner-spin-button, 
-      input[type="number"]::-webkit-outer-spin-button { 
-        -webkit-appearance: none; 
-        margin: 0; 
-      }
-      /* Hide number arrows in Firefox */
+      input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
       input[type="number"] { -moz-appearance: textfield; }
 
-      /* Strict Printing Rules for Thermal Barcode Printers */
+      /* STRICT THERMAL PRINTER CSS */
       @media print {
-        @page { size: auto; margin: 0; }
-        body * { visibility: hidden; }
-        #printable-barcode, #printable-barcode * { visibility: visible; }
-        #printable-barcode { position: absolute; left: 0; top: 0; width: 100%; }
-        /* Forces page breaks between barcodes */
-        .barcode-page { page-break-after: always; overflow: hidden; }
+        @page { size: 50mm 25mm; margin: 0; }
+        body { background: white !important; margin: 0; padding: 0; }
+        body > :not(#printable-barcode) { display: none !important; }
+        
+        #printable-barcode { 
+          display: block !important; 
+          position: absolute; top: 0; left: 0; 
+          width: 50mm; margin: 0; padding: 0; 
+        }
+        
+        .barcode-page { 
+          width: 50mm; height: 25mm; 
+          page-break-after: always; 
+          display: flex !important; 
+          flex-direction: column !important; 
+          align-items: center !important; 
+          justify-content: center !important; 
+          box-sizing: border-box; 
+          overflow: hidden;
+        }
+        
+        * { 
+          -webkit-print-color-adjust: exact !important; 
+          color-adjust: exact !important; 
+          color: black !important; 
+        }
+        svg { display: block !important; }
       }
     </style>
   </head>
