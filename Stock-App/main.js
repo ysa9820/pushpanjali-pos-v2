@@ -24,8 +24,10 @@ ipcMain.on('print-silent', (event, printerName) => {
     deviceName: printerName || '', 
     color: false,
     margins: { marginType: 'none' },
-    printBackground: true, // CRITICAL FOR THERMAL PRINTERS
-    landscape: false
+    printBackground: true,
+    landscape: false,
+    // CRITICAL: Force the hardware to recognize a 50mm x 25mm label (measured in Microns)
+    pageSize: { width: 50000, height: 25000 } 
   }, (success, failureReason) => {
     if (!success) console.error("Silent Print Failed:", failureReason);
   });
