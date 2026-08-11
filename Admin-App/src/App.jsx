@@ -20,7 +20,7 @@ const ALL_BLOCKS = [
 export default function App() {
   const [serverIP, setServerIP] = useState(localStorage.getItem('server_ip') || '');
   const [isSettingUp, setIsSettingUp] = useState(!localStorage.getItem('server_ip'));
-  const [activeTab, setActiveTab] = useState('DESIGNER'); 
+  const [activeTab, setActiveTab] = useState('DASHBOARD'); 
 
   const [settings, setSettings] = useState({ shopName: '', address: '', phone: '', gstin: '', billFooterMsg: '', minReceiptLines: 32, receiptLayout: [] });
   const [users, setUsers] = useState([]);
@@ -134,6 +134,61 @@ export default function App() {
 
       <div className="flex-1 overflow-auto p-4">
         
+        {/* --- DASHBOARD TAB (RESTORED) --- */}
+        {activeTab === 'DASHBOARD' && (
+          <div className="max-w-6xl mx-auto flex flex-col gap-6 mt-4">
+            
+            {/* Metric Cards */}
+            <div className="grid grid-cols-3 gap-6">
+              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-blue-500">
+                <h3 className="text-gray-500 font-bold text-sm uppercase">Lifetime Sales</h3>
+                <div className="text-4xl font-black text-gray-800 mt-2">₹{totalSalesValuation.toLocaleString('en-IN')}</div>
+              </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-green-500">
+                <h3 className="text-gray-500 font-bold text-sm uppercase">Current Stock Value</h3>
+                <div className="text-4xl font-black text-gray-800 mt-2">₹{totalStockValuation.toLocaleString('en-IN')}</div>
+              </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-purple-500 flex flex-col justify-center items-center cursor-pointer hover:bg-gray-50" onClick={() => fetchData()}>
+                <span className="text-4xl mb-2">🔄</span>
+                <span className="font-bold text-gray-700">Refresh Data</span>
+              </div>
+            </div>
+
+            {/* RESTORED: Recent Sales History Table */}
+            <div className="bg-white border rounded-xl shadow-sm overflow-hidden mt-4">
+              <div className="bg-gray-100 p-4 border-b font-bold text-gray-700 text-lg">📝 Recent Sales History</div>
+              <table className="w-full text-left">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    <th className="p-3">Invoice No</th>
+                    <th className="p-3">Date</th>
+                    <th className="p-3">Cashier</th>
+                    <th className="p-3">Customer</th>
+                    <th className="p-3">Payment</th>
+                    <th className="p-3 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sales.slice().reverse().slice(0, 15).map((s, i) => (
+                    <tr key={i} className="border-b hover:bg-blue-50">
+                      <td className="p-3 font-bold text-blue-700">{s.invoice}</td>
+                      <td className="p-3">{s.date} {s.time}</td>
+                      <td className="p-3 font-bold">{s.cashier}</td>
+                      <td className="p-3">{s.customerName || 'Walk-in'} <span className="text-xs text-gray-500 block">{s.customerMobile && s.customerMobile !== 'N/A' ? s.customerMobile : ''}</span></td>
+                      <td className="p-3"><span className={`px-2 py-1 rounded text-xs font-bold ${s.method === 'CASH' ? 'bg-green-100 text-green-800' : s.method === 'UPI' ? 'bg-purple-100 text-purple-800' : 'bg-red-100 text-red-800'}`}>{s.method}</span></td>
+                      <td className="p-3 text-right font-bold text-lg">₹{parseFloat(s.amount).toLocaleString('en-IN')}</td>
+                    </tr>
+                  ))}
+                  {sales.length === 0 && (
+                    <tr><td colSpan="6" className="p-8 text-center text-gray-400 font-bold">No sales recorded yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+        )}
+
         {/* --- RECEIPT DESIGNER TAB --- */}
         {activeTab === 'DESIGNER' && (
           <div className="max-w-6xl mx-auto h-full flex flex-col">
@@ -246,17 +301,6 @@ export default function App() {
               <table className="w-full text-left"><thead className="bg-gray-50 border-b"><tr><th className="p-3">Staff Name</th><th className="p-3">Role</th><th className="p-3">Status</th><th className="p-3 text-right">Action</th></tr></thead>
                 <tbody>{users.map(u => (<tr key={u.id} className="border-b"><td className="p-3 font-bold text-gray-800">{u.name}</td><td className="p-3"><span className={`px-2 py-1 rounded text-xs font-bold uppercase ${u.role === 'admin' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>{u.role}</span></td><td className="p-3 font-bold text-green-600">Active</td><td className="p-3 text-right">{u.id !== 1 && <button onClick={() => deleteUser(u.id)} className="bg-red-500 text-white px-3 py-1 rounded font-bold text-xs hover:bg-red-600">Revoke</button>}</td></tr>))}</tbody>
               </table>
-            </div>
-          </div>
-        )}
-
-        {/* --- DASHBOARD TAB --- */}
-        {activeTab === 'DASHBOARD' && (
-          <div className="max-w-6xl mx-auto flex flex-col gap-6 mt-4">
-            <div className="grid grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-blue-500"><h3 className="text-gray-500 font-bold text-sm uppercase">Lifetime Sales</h3><div className="text-4xl font-black text-gray-800 mt-2">₹{totalSalesValuation.toLocaleString('en-IN')}</div></div>
-              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-green-500"><h3 className="text-gray-500 font-bold text-sm uppercase">Current Stock Value</h3><div className="text-4xl font-black text-gray-800 mt-2">₹{totalStockValuation.toLocaleString('en-IN')}</div></div>
-              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-purple-500 flex flex-col justify-center items-center cursor-pointer hover:bg-gray-50" onClick={() => fetchData()}><span className="text-4xl mb-2">🔄</span><span className="font-bold text-gray-700">Refresh Data</span></div>
             </div>
           </div>
         )}
