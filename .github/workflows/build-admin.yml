@@ -1,0 +1,33 @@
+name: Build Admin Dashboard
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Admin-App/**'
+      - '.github/workflows/build-admin.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out Git repository
+      uses: actions/checkout@v4
+
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Install Dependencies & Build
+      working-directory: ./Admin-App
+      run: |
+        npm install
+        npm run app:build
+
+    - name: Upload Admin Dashboard EXE
+      uses: actions/upload-artifact@v4
+      with:
+        name: Pushpanjali-Admin-App
+        path: Admin-App/dist-electron/*.exe
