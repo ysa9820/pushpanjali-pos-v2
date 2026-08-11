@@ -1,0 +1,33 @@
+name: Build POS Terminal
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'POS-App/**'
+      - '.github/workflows/build-pos.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out Git repository
+      uses: actions/checkout@v4
+
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Install Dependencies & Build
+      working-directory: ./POS-App
+      run: |
+        npm install
+        npm run app:build
+
+    - name: Upload POS Terminal EXE
+      uses: actions/upload-artifact@v4
+      with:
+        name: Pushpanjali-POS-Terminal
+        path: POS-App/dist-electron/*.exe
