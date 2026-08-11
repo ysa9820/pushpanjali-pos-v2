@@ -2,10 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
-// Anti-freeze helpers
-const safeAlert = (msg) => { if (document.activeElement) document.activeElement.blur(); setTimeout(() => alert(msg), 10); };
-const safeConfirm = (msg) => { if (document.activeElement) document.activeElement.blur(); return window.confirm(msg); };
-
 export default function App() {
   // Setup & Settings
   const [serverIP, setServerIP] = useState(localStorage.getItem('server_ip') || '');
@@ -30,6 +26,21 @@ export default function App() {
   const [customer, setCustomer] = useState({ name: '', mobile: '' });
   const [paymentMode, setPaymentMode] = useState('CASH'); // CASH, UPI, CREDIT
 
+  // --- CUSTOM ALERTS (Fixes the Freeze Bug) ---
+  const [appAlert, setAppAlert] = useState({ show: false, msg: '' });
+  const [appConfirm, setAppConfirm] = useState({ show: false, msg: '', onYes: null });
+
+  const closeAlert = () => {
+    setAppAlert({ show: false, msg: '' });
+    // Instantly return focus to barcode scanner so cashier can keep scanning
+    setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100);
+  };
+
+  const closeConfirm = () => {
+    setAppConfirm({ show: false, msg: '', onYes: null });
+    setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100);
+  };
+
   // Fetch Data on Load
   useEffect(() => {
     if (serverIP && !isSettingUp) {
@@ -43,7 +54,7 @@ export default function App() {
     if (ipcRenderer) {
       ipcRenderer.on('print-finished', (event, result) => {
         setIsPrinting(false);
-        if (!result.success) safeAlert(`❌ Printer Error:\nMake sure your thermal printer is named exactly "${printerName}" in Windows Settings.`);
+        if (!result.success) setAppAlert({ show: true, msg: `❌ Printer Error:\nMake sure your thermal printer is named exactly "${printerName}" in Windows Settings.` });
       });
     }
     return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
@@ -57,7 +68,7 @@ export default function App() {
   const handleLogin = () => {
     const user = users.find(u => u.pin === pinInput);
     if (user) { setLoggedInUser(user); setPinInput(''); } 
-    else { safeAlert("Invalid PIN"); setPinInput(''); }
+    else { setAppAlert({ show: true, msg: "Invalid PIN" }); setPinInput(''); }
   };
 
   const handleLogout = () => {
@@ -65,6 +76,15 @@ export default function App() {
   };
 
   // --- BARCODE SCANNER LOGIC ---
+  const addToCart = (item, code) => {
+    const existing = cart.find(c => c.barcode.toLowerCase() === code);
+    if (existing) {
+      setCart(cart.map(c => c.barcode.toLowerCase() === code ? { ...c, cartQty: c.cartQty + 1 } : c));
+    } else {
+      setCart([...cart, { ...item, cartQty: 1, originalPrice: item.price }]);
+    }
+  };
+
   const handleBarcodeSubmit = (e) => {
     e.preventDefault();
     const code = barcodeInput.trim().toLowerCase();
@@ -72,21 +92,19 @@ export default function App() {
 
     const item = inventory.find(i => i.barcode.toLowerCase() === code);
     if (!item) {
-      safeAlert(`Barcode ${barcodeInput} not found in master!`);
+      setAppAlert({ show: true, msg: `Barcode [${barcodeInput}] not found in master database!` });
       setBarcodeInput(''); return;
     }
     if (item.qty <= 0) {
-      if (!safeConfirm(`Item "${item.name}" is OUT OF STOCK in the system. Sell anyway?`)) {
-        setBarcodeInput(''); return;
-      }
+      setAppConfirm({
+        show: true,
+        msg: `Item "${item.name}" is OUT OF STOCK in the system.\n\nDo you want to sell it anyway?`,
+        onYes: () => { addToCart(item, code); }
+      });
+      setBarcodeInput(''); return;
     }
 
-    const existing = cart.find(c => c.barcode.toLowerCase() === code);
-    if (existing) {
-      setCart(cart.map(c => c.barcode.toLowerCase() === code ? { ...c, cartQty: c.cartQty + 1 } : c));
-    } else {
-      setCart([...cart, { ...item, cartQty: 1, originalPrice: item.price }]);
-    }
+    addToCart(item, code);
     setBarcodeInput('');
   };
 
@@ -104,9 +122,9 @@ export default function App() {
   const totalItems = cart.reduce((sum, item) => sum + item.cartQty, 0);
 
   const processCheckout = async () => {
-    if (cart.length === 0) return safeAlert("Cart is empty!");
+    if (cart.length === 0) return setAppAlert({ show: true, msg: "Cart is empty!" });
     if (paymentMode === 'CREDIT' && (!customer.name || !customer.mobile)) {
-      return safeAlert("Customer Name and Mobile are REQUIRED for Credit/Udhaar bills.");
+      return setAppAlert({ show: true, msg: "Customer Name and Mobile are REQUIRED for Credit/Udhaar bills." });
     }
 
     try {
@@ -122,28 +140,29 @@ export default function App() {
       const data = await res.json();
 
       if (data.success) {
-        setLastInvoice(data.sale); // Save to state so hidden DOM can render receipt
+        setLastInvoice(data.sale); 
         
-        // Wait for DOM to update with receipt data, then print
         setTimeout(() => {
           if (ipcRenderer && printerName) {
             setIsPrinting(true);
             ipcRenderer.send('print-receipt', printerName);
-            setTimeout(() => setIsPrinting(false), 5000); // Failsafe unfreeze
+            setTimeout(() => { setIsPrinting(false); if (barcodeRef.current) barcodeRef.current.focus(); }, 5000); 
           } else {
             window.print();
+            if (barcodeRef.current) barcodeRef.current.focus();
           }
-          // Clear terminal for next customer
           setCart([]); setCustomer({ name: '', mobile: '' }); setPaymentMode('CASH'); fetchInventory();
         }, 500);
       }
-    } catch (e) { safeAlert("Error connecting to server. Checkout failed."); }
+    } catch (e) { setAppAlert({ show: true, msg: "Error connecting to server. Checkout failed." }); }
   };
 
   // Keep focus on barcode scanner
   useEffect(() => {
-    if (loggedInUser && barcodeRef.current) barcodeRef.current.focus();
-  }, [loggedInUser, cart, isPrinting]);
+    if (loggedInUser && barcodeRef.current && !appAlert.show && !appConfirm.show && !isPrinting) {
+      barcodeRef.current.focus();
+    }
+  }, [loggedInUser, cart, isPrinting, appAlert.show, appConfirm.show]);
 
   // --- RENDERERS ---
   if (isSettingUp) {
@@ -162,6 +181,16 @@ export default function App() {
   if (!loggedInUser) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-gray-900 font-sans">
+        
+        {appAlert.show && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
+            <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600">
+              <p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p>
+              <button onClick={() => setAppAlert({show: false, msg: ''})} className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700">OK</button>
+            </div>
+          </div>
+        )}
+
         <div className="bg-white p-8 rounded-lg shadow-2xl w-[400px] text-center border-t-8 border-blue-600">
           <h1 className="text-3xl font-black text-gray-800 mb-2">POS Terminal</h1>
           <p className="text-gray-500 font-bold mb-6">Enter PIN to Unlock Till</p>
@@ -176,6 +205,29 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-200 font-sans overflow-hidden">
       
+      {/* --- CUSTOM APP ALERTS (PREVENTS FREEZING) --- */}
+      {appAlert.show && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600">
+            <p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p>
+            <button onClick={closeAlert} autoFocus className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700 focus:ring-4 focus:ring-blue-300">OK</button>
+          </div>
+        </div>
+      )}
+
+      {/* --- CUSTOM APP CONFIRM (PREVENTS FREEZING) --- */}
+      {appConfirm.show && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-yellow-500">
+            <p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appConfirm.msg}</p>
+            <div className="flex justify-center gap-4">
+              <button onClick={closeConfirm} className="bg-gray-300 text-gray-800 font-bold py-2 px-6 rounded hover:bg-gray-400">Cancel</button>
+              <button onClick={() => { appConfirm.onYes(); closeConfirm(); }} autoFocus className="bg-red-600 text-white font-bold py-2 px-6 rounded hover:bg-red-700">Yes, Proceed</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* FREEZE OVERLAY */}
       {isPrinting && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
@@ -237,7 +289,7 @@ export default function App() {
         <div className="flex-1 bg-white flex flex-col border-r shadow-lg z-10">
           <div className="bg-gray-100 p-3 border-b flex justify-between font-black text-gray-700">
             <span>🛒 Current Bill ({totalItems} Items)</span>
-            <button onClick={() => {if(safeConfirm("Clear entire cart?")) setCart([]);}} className="text-red-500 hover:text-red-700 text-xs underline">Clear Cart</button>
+            <button onClick={() => { setAppConfirm({show: true, msg: "Clear entire cart?", onYes: () => setCart([])}) }} className="text-red-500 hover:text-red-700 text-xs underline">Clear Cart</button>
           </div>
           
           <div className="flex-1 overflow-y-auto">
