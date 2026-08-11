@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pushpanjali POS Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      
+      /* STRICT 80mm THERMAL RECEIPT CSS */
+      @media print {
+        @page { margin: 0; size: 80mm auto; }
+        body { background: white !important; margin: 0; padding: 0; }
+        body > :not(#printable-receipt) { display: none !important; }
+        
+        #printable-receipt { 
+          display: block !important; 
+          width: 76mm; /* Slight inner margin for 80mm paper */
+          margin: 0 auto; 
+          padding: 2mm 0;
+          font-family: monospace, sans-serif;
+          color: black !important;
+        }
+        * { -webkit-print-color-adjust: exact !important; color-adjust: exact !important; }
+      }
+    </style>
+  </head>
+  <body class="bg-gray-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
