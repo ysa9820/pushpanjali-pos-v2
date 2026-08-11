@@ -7,7 +7,7 @@ const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
 
 let win = null;
 let tray = null;
-let isQuitting = false; // Flag to check if we are actually quitting
+let isQuitting = false;
 
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -37,11 +37,29 @@ function startServer() {
       dbCache = { 
         inventory: [], sales: [], customers: [], 
         users: [{ id: 1, name: 'Master Admin', pin: '1234', role: 'admin', code: '01' }],
-        settings: { shopName: "Pushpanjali Fashion Centre", phone: "+91 8767571916", receiptWidth: "110", labelWidth: "50", labelHeight: "25", defaultCommissionRate: 2, billShowCustomer: true, billShowSalesperson: true, billFooterMsg: "Thank you for shopping!", barcodeShowShopName: true, barcodeShowPrice: true }
+        settings: { 
+          shopName: "Pushpanjali Fashion", phone: "", address: "", gstin: "", billFooterMsg: "Thank you for shopping!",
+          minReceiptLines: 32, // ≈ 5 inches minimum length
+          // The Default Standard Block Layout Map
+          receiptLayout: [
+            "HEADER_SHOPNAME", "HEADER_ADDRESS", "HEADER_PHONE_GST", 
+            "DIVIDER_DASHED", "BILL_INFO", "CUSTOMER_INFO", "DIVIDER_SOLID", 
+            "ITEM_TABLE", "DIVIDER_SOLID", "BLANK_SPACE_DYNAMIC", 
+            "TOTAL_AMOUNT", "PAYMENT_METHOD", "DIVIDER_DASHED", "FOOTER_MESSAGE"
+          ]
+        }
       };
       atomicSaveToDisk();
     } else {
-      try { dbCache = JSON.parse(fs.readFileSync(dbPath, 'utf8')); } catch (err) { console.error("Database read error:", err); }
+      try { 
+        dbCache = JSON.parse(fs.readFileSync(dbPath, 'utf8')); 
+        // Inject default layout if older DB version doesn't have it
+        if (!dbCache.settings.receiptLayout) {
+          dbCache.settings.minReceiptLines = 32;
+          dbCache.settings.receiptLayout = ["HEADER_SHOPNAME", "HEADER_ADDRESS", "HEADER_PHONE_GST", "DIVIDER_DASHED", "BILL_INFO", "CUSTOMER_INFO", "DIVIDER_SOLID", "ITEM_TABLE", "DIVIDER_SOLID", "BLANK_SPACE_DYNAMIC", "TOTAL_AMOUNT", "PAYMENT_METHOD", "DIVIDER_DASHED", "FOOTER_MESSAGE"];
+          atomicSaveToDisk();
+        }
+      } catch (err) { console.error("Database read error:", err); }
     }
   };
 
@@ -58,8 +76,7 @@ function startServer() {
   serverApp.post('/api/users', (req, res) => { const { id, name, pin, role, code } = req.body; if (id) { const index = dbCache.users.findIndex(u => u.id === id); if (index >= 0) dbCache.users[index] = { id, name, pin, role, code }; } else { dbCache.users.push({ id: Date.now(), name, pin, role, code }); } atomicSaveToDisk(); res.json({ success: true }); });
   serverApp.delete('/api/users/:id', (req, res) => { dbCache.users = dbCache.users.filter(u => u.id !== parseInt(req.params.id)); atomicSaveToDisk(); res.json({ success: true }); });
   serverApp.get('/api/customers', (req, res) => res.json(dbCache.customers || []));
-  serverApp.post('/api/customers/pay', (req, res) => { const { customerId, amountPaid } = req.body; const customer = dbCache.customers.find(c => c.id === customerId); if (customer) { customer.balance -= Number(amountPaid); customer.history.push({ date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), type: 'PAYMENT', amount: Number(amountPaid) }); atomicSaveToDisk(); res.json({ success: true, newBalance: customer.balance }); } else res.status(404).json({ error: "Customer not found" }); });
-
+  
   serverApp.get('/api/inventory', (req, res) => res.json(dbCache.inventory));
   serverApp.get('/api/sales', (req, res) => res.json(dbCache.sales));
   
@@ -68,21 +85,7 @@ function startServer() {
     const existing = dbCache.inventory.findIndex(item => item.barcode === barcode);
     if (existing >= 0) {
       dbCache.inventory[existing].qty += Number(qty); dbCache.inventory[existing].price = Number(price); dbCache.inventory[existing].purchasePrice = Number(purchasePrice || 0); dbCache.inventory[existing].brand = brand || ''; dbCache.inventory[existing].size = size || ''; dbCache.inventory[existing].hsn = hsn || ''; dbCache.inventory[existing].supplierName = supplierName || dbCache.inventory[existing].supplierName;
-    } else {
-      dbCache.inventory.push({ barcode, name, category, qty: Number(qty), price: Number(price), purchasePrice: Number(purchasePrice || 0), brand: brand || '', size: size || '', hsn: hsn || '', supplierName: supplierName || '' });
-    }
-    atomicSaveToDisk(); res.json({ success: true });
-  });
-
-  serverApp.put('/api/inventory/bulk', (req, res) => {
-    const { items } = req.body;
-    if (!items || !Array.isArray(items)) return res.status(400).json({ error: "No items provided" });
-    items.forEach(updatedItem => {
-      const index = dbCache.inventory.findIndex(i => i.barcode === updatedItem.barcode);
-      if (index >= 0) {
-        dbCache.inventory[index] = { ...dbCache.inventory[index], name: updatedItem.name, brand: updatedItem.brand, size: updatedItem.size, qty: Number(updatedItem.qty), price: Number(updatedItem.price), purchasePrice: Number(updatedItem.purchasePrice || 0), supplierName: updatedItem.supplierName };
-      }
-    });
+    } else { dbCache.inventory.push({ barcode, name, category, qty: Number(qty), price: Number(price), purchasePrice: Number(purchasePrice || 0), brand: brand || '', size: size || '', hsn: hsn || '', supplierName: supplierName || '' }); }
     atomicSaveToDisk(); res.json({ success: true });
   });
 
@@ -101,80 +104,24 @@ function startServer() {
     const { cart, totalAmount, paymentMethod, cashierName, customerName, customerMobile, terminalId } = req.body;
     cart.forEach(cartItem => { if (cartItem.barcode) { const itemIndex = dbCache.inventory.findIndex(inv => inv.barcode === cartItem.barcode); if (itemIndex >= 0) dbCache.inventory[itemIndex].qty -= cartItem.qty; } });
     const invoiceNo = '#INV-' + Math.floor(100000 + Math.random() * 900000);
-    if (paymentMethod === 'CREDIT') { let customer = dbCache.customers.find(c => c.mobile === customerMobile); if (!customer) { customer = { id: Date.now(), name: customerName, mobile: customerMobile, balance: 0, history: [] }; dbCache.customers.push(customer); } customer.balance += Number(totalAmount); customer.history.push({ date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), invoice: invoiceNo, type: 'CREDIT_SALE', amount: Number(totalAmount) }); }
-    const saleRecord = { invoice: invoiceNo, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), amount: totalAmount, method: paymentMethod, cashier: cashierName, customerName: customerName || 'Walk-in', customerMobile: customerMobile || 'N/A', terminal: terminalId, items: cart };
+    const saleRecord = { invoice: invoiceNo, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), amount: totalAmount, method: paymentMethod, cashier: cashierName, customerName: customerName || '', customerMobile: customerMobile || '', terminal: terminalId, items: cart };
     dbCache.sales.push(saleRecord); atomicSaveToDisk(); res.json({ success: true, sale: saleRecord });
   });
 
   serverApp.listen(5000, '0.0.0.0', () => console.log('Master Server Running.'));
 }
 
-// --- ELECTRON APP LIFECYCLE ---
 app.whenReady().then(() => {
-  
-  // 1. Force the App to start silently when Windows Boots Up
-  app.setLoginItemSettings({
-    openAtLogin: true,
-    path: app.getPath('exe')
-  });
-
+  app.setLoginItemSettings({ openAtLogin: true, path: app.getPath('exe') });
   startServer();
-
-  win = new BrowserWindow({ 
-    width: 550, 
-    height: 450, 
-    autoHideMenuBar: true, 
-    webPreferences: { nodeIntegration: true },
-    icon: nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAoSURBVDhPY3jP4PgfCDmA2Hhg1YAAAxoYRh2AA4yhA0YdgAOMoQMGAAx+Ew3w7U+KAAAAAElFTkSuQmCC') // Tiny blue dot icon
-  });
-  
-  const ipAddress = getLocalIP();
-  
-  const htmlContent = `
-    <!DOCTYPE html><html><body style="font-family: sans-serif; background-color: #f3f4f6; color: #1f2937; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
-      <div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; border-top: 5px solid #2563eb;">
-        <h1 style="color: #1e3a8a; margin-top: 0; font-size: 24px;">🧠 Master Server Engine</h1>
-        <div style="background: #d1fae5; color: #047857; padding: 5px 15px; border-radius: 20px; font-weight: bold; display: inline-block; margin-bottom: 20px;">● ONLINE & RUNNING IN BACKGROUND</div>
-        <p style="margin: 0; color: #4b5563; font-weight: bold;">Your POS & Stock Room IP Address is:</p>
-        <div style="font-size: 36px; font-weight: bold; font-family: monospace; background: #e5e7eb; padding: 10px; border-radius: 5px; margin: 10px 0; letter-spacing: 2px;">${ipAddress}</div>
-        
-        <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 10px; text-align: left; margin-top: 20px; font-size: 12px; color: #991b1b;">
-          <strong>🛡️ SERVER PROTECTION ACTIVE:</strong><br>
-          If you close this window, the server will NOT shut down. It will hide safely near the Windows clock.<br>
-          To fully turn off the server, right-click the blue dot in the system tray and select "Quit Server".
-        </div>
-      </div>
-    </body></html>`;
-  
+  win = new BrowserWindow({ width: 550, height: 450, autoHideMenuBar: true, webPreferences: { nodeIntegration: true }, icon: nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAoSURBVDhPY3jP4PgfCDmA2Hhg1YAAAxoYRh2AA4yhA0YdgAOMoQMGAAx+Ew3w7U+KAAAAAElFTkSuQmCC') });
+  const htmlContent = `<!DOCTYPE html><html><body style="font-family: sans-serif; background-color: #f3f4f6; color: #1f2937; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;"><div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; border-top: 5px solid #2563eb;"><h1 style="color: #1e3a8a; margin-top: 0; font-size: 24px;">🧠 Master Server Engine</h1><div style="background: #d1fae5; color: #047857; padding: 5px 15px; border-radius: 20px; font-weight: bold; display: inline-block; margin-bottom: 20px;">● ONLINE & RUNNING IN BACKGROUND</div><p style="margin: 0; color: #4b5563; font-weight: bold;">Your POS & Stock Room IP Address is:</p><div style="font-size: 36px; font-weight: bold; font-family: monospace; background: #e5e7eb; padding: 10px; border-radius: 5px; margin: 10px 0; letter-spacing: 2px;">${getLocalIP()}</div><div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 10px; text-align: left; margin-top: 20px; font-size: 12px; color: #991b1b;"><strong>🛡️ SERVER PROTECTION ACTIVE:</strong><br>If you close this window, the server will NOT shut down. It will hide safely near the Windows clock.<br>To fully turn off the server, right-click the blue dot in the system tray and select "Quit Server".</div></div></body></html>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent));
-
-  // 2. Intercept the 'Close' event to Hide instead of Quit
-  win.on('close', (event) => {
-    if (!isQuitting) {
-      event.preventDefault();
-      win.hide();
-    }
-    return false;
-  });
-
-  // 3. Create the System Tray Icon
+  win.on('close', (event) => { if (!isQuitting) { event.preventDefault(); win.hide(); } return false; });
   const icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAoSURBVDhPY3jP4PgfCDmA2Hhg1YAAAxoYRh2AA4yhA0YdgAOMoQMGAAx+Ew3w7U+KAAAAAElFTkSuQmCC');
   tray = new Tray(icon);
   tray.setToolTip('Pushpanjali Master Server');
-  
-  const contextMenu = Menu.buildFromTemplate([
-    { label: 'Show Server Status', click: () => win.show() },
-    { type: 'separator' },
-    { label: 'Quit Server (Stops All Apps)', click: () => {
-        isQuitting = true;
-        app.quit();
-    }}
-  ]);
-  
-  tray.setContextMenu(contextMenu);
-  tray.on('double-click', () => win.show());
+  const contextMenu = Menu.buildFromTemplate([{ label: 'Show Server Status', click: () => win.show() }, { type: 'separator' }, { label: 'Quit Server', click: () => { isQuitting = true; app.quit(); } }]);
+  tray.setContextMenu(contextMenu); tray.on('double-click', () => win.show());
 });
-
-app.on('window-all-closed', () => { 
-  if (process.platform !== 'darwin') app.quit(); 
-});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
