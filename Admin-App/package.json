@@ -1,0 +1,27 @@
+{
+  "name": "pushpanjali-admin",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "app:build": "vite build && electron-builder --win -p never"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^29.1.0",
+    "electron-builder": "^24.13.3",
+    "vite": "^5.1.4"
+  },
+  "build": {
+    "appId": "com.pushpanjali.admin",
+    "productName": "Pushpanjali Admin Dashboard",
+    "directories": { "output": "dist-electron" },
+    "win": { "target": "nsis" },
+    "files": [ "dist/**/*", "main.js" ]
+  }
+}
