@@ -37,7 +37,6 @@ ipcMain.on('print-receipt', (event, { printerPath, invoice, firmSettings }) => {
   const ESC = 0x1B;
   const GS = 0x1D;
 
-  // A 4-inch (104mm) printer fits exactly 69 characters per line on standard font.
   function padRight(str, len) {
     if (str.length > len) return str.substring(0, len);
     return str + " ".repeat(len - str.length);
@@ -47,8 +46,16 @@ ipcMain.on('print-receipt', (event, { printerPath, invoice, firmSettings }) => {
     return " ".repeat(len - str.length) + str;
   }
 
-  // 1. Initialize Printer (Forces ESC/POS Mode)
+  // 1. Initialize Printer
   append([ESC, 0x40]);
+  
+  // --- CRITICAL HARDWARE FIX: REVERSE FEED ---
+  // ESC j n : Reverse feed paper by n dots (1 mm ≈ 8 dots. 25mm ≈ 200 dots).
+  // Not all generic printers support this standard command perfectly.
+  // If ESC j (0x1B, 0x6A) is ignored, the printer might require TSPL commands, 
+  // but we'll try the standard ESC/POS reverse feed first. 
+  // 200 dots ≈ 25mm. 
+  append([ESC, 0x6A, 200]); 
   
   // 2. Header (Centered)
   append([ESC, 0x61, 0x01]); // Align Center
@@ -114,6 +121,7 @@ ipcMain.on('print-receipt', (event, { printerPath, invoice, firmSettings }) => {
   append((firmSettings.billFooterMsg || "Thank you for shopping! Visit Again.") + "\n");
   
   // 8. Feed paper and Full Cut
+  // We feed a bit extra here so the cut clears the text, but the reverse feed at the top of the next print will pull it back.
   append("\n\n\n\n\n");
   append([GS, 0x56, 0x41, 0x00]); // Native Auto-Cut Command
 
