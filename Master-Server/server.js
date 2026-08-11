@@ -3,7 +3,11 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+
+let win = null;
+let tray = null;
+let isQuitting = false; // Flag to check if we are actually quitting
 
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -58,6 +62,7 @@ function startServer() {
 
   serverApp.get('/api/inventory', (req, res) => res.json(dbCache.inventory));
   serverApp.get('/api/sales', (req, res) => res.json(dbCache.sales));
+  
   serverApp.post('/api/inventory', (req, res) => {
     const { barcode, name, category, qty, price, purchasePrice, brand, size, hsn, supplierName } = req.body;
     const existing = dbCache.inventory.findIndex(item => item.barcode === barcode);
@@ -66,6 +71,18 @@ function startServer() {
     } else {
       dbCache.inventory.push({ barcode, name, category, qty: Number(qty), price: Number(price), purchasePrice: Number(purchasePrice || 0), brand: brand || '', size: size || '', hsn: hsn || '', supplierName: supplierName || '' });
     }
+    atomicSaveToDisk(); res.json({ success: true });
+  });
+
+  serverApp.put('/api/inventory/bulk', (req, res) => {
+    const { items } = req.body;
+    if (!items || !Array.isArray(items)) return res.status(400).json({ error: "No items provided" });
+    items.forEach(updatedItem => {
+      const index = dbCache.inventory.findIndex(i => i.barcode === updatedItem.barcode);
+      if (index >= 0) {
+        dbCache.inventory[index] = { ...dbCache.inventory[index], name: updatedItem.name, brand: updatedItem.brand, size: updatedItem.size, qty: Number(updatedItem.qty), price: Number(updatedItem.price), purchasePrice: Number(updatedItem.purchasePrice || 0), supplierName: updatedItem.supplierName };
+      }
+    });
     atomicSaveToDisk(); res.json({ success: true });
   });
 
@@ -92,11 +109,72 @@ function startServer() {
   serverApp.listen(5000, '0.0.0.0', () => console.log('Master Server Running.'));
 }
 
+// --- ELECTRON APP LIFECYCLE ---
 app.whenReady().then(() => {
+  
+  // 1. Force the App to start silently when Windows Boots Up
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    path: app.getPath('exe')
+  });
+
   startServer();
-  const win = new BrowserWindow({ width: 500, height: 400, autoHideMenuBar: true, webPreferences: { nodeIntegration: true } });
+
+  win = new BrowserWindow({ 
+    width: 550, 
+    height: 450, 
+    autoHideMenuBar: true, 
+    webPreferences: { nodeIntegration: true },
+    icon: nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAoSURBVDhPY3jP4PgfCDmA2Hhg1YAAAxoYRh2AA4yhA0YdgAOMoQMGAAx+Ew3w7U+KAAAAAElFTkSuQmCC') // Tiny blue dot icon
+  });
+  
   const ipAddress = getLocalIP();
-  const htmlContent = `<!DOCTYPE html><html><body style="font-family: sans-serif; background-color: #f3f4f6; color: #1f2937; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;"><div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center;"><h1 style="color: #1e3a8a; margin-top: 0;">🧠 Master Server</h1><div style="background: #d1fae5; color: #047857; padding: 5px 15px; border-radius: 20px; font-weight: bold; display: inline-block; margin-bottom: 20px;">● ONLINE & RUNNING</div><p style="margin: 0; color: #4b5563;">Your POS & Stock Room IP Address is:</p><div style="font-size: 32px; font-weight: bold; font-family: monospace; background: #e5e7eb; padding: 10px; border-radius: 5px; margin: 10px 0; letter-spacing: 2px;">${ipAddress}</div><p style="font-size: 12px; color: #9ca3af; max-width: 300px; margin: 20px auto 0;">Leave this window open in the background. Do not close this app.</p></div></body></html>`;
+  
+  const htmlContent = `
+    <!DOCTYPE html><html><body style="font-family: sans-serif; background-color: #f3f4f6; color: #1f2937; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+      <div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; border-top: 5px solid #2563eb;">
+        <h1 style="color: #1e3a8a; margin-top: 0; font-size: 24px;">🧠 Master Server Engine</h1>
+        <div style="background: #d1fae5; color: #047857; padding: 5px 15px; border-radius: 20px; font-weight: bold; display: inline-block; margin-bottom: 20px;">● ONLINE & RUNNING IN BACKGROUND</div>
+        <p style="margin: 0; color: #4b5563; font-weight: bold;">Your POS & Stock Room IP Address is:</p>
+        <div style="font-size: 36px; font-weight: bold; font-family: monospace; background: #e5e7eb; padding: 10px; border-radius: 5px; margin: 10px 0; letter-spacing: 2px;">${ipAddress}</div>
+        
+        <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 10px; text-align: left; margin-top: 20px; font-size: 12px; color: #991b1b;">
+          <strong>🛡️ SERVER PROTECTION ACTIVE:</strong><br>
+          If you close this window, the server will NOT shut down. It will hide safely near the Windows clock.<br>
+          To fully turn off the server, right-click the blue dot in the system tray and select "Quit Server".
+        </div>
+      </div>
+    </body></html>`;
+  
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent));
+
+  // 2. Intercept the 'Close' event to Hide instead of Quit
+  win.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
+    }
+    return false;
+  });
+
+  // 3. Create the System Tray Icon
+  const icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAoSURBVDhPY3jP4PgfCDmA2Hhg1YAAAxoYRh2AA4yhA0YdgAOMoQMGAAx+Ew3w7U+KAAAAAElFTkSuQmCC');
+  tray = new Tray(icon);
+  tray.setToolTip('Pushpanjali Master Server');
+  
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Show Server Status', click: () => win.show() },
+    { type: 'separator' },
+    { label: 'Quit Server (Stops All Apps)', click: () => {
+        isQuitting = true;
+        app.quit();
+    }}
+  ]);
+  
+  tray.setContextMenu(contextMenu);
+  tray.on('double-click', () => win.show());
 });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+app.on('window-all-closed', () => { 
+  if (process.platform !== 'darwin') app.quit(); 
+});
