@@ -8,18 +8,18 @@
     <style>
       input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
       
-      /* STRICT 80mm THERMAL RECEIPT CSS */
+      /* STRICT 4-INCH (104mm) THERMAL RECEIPT CSS */
       @media print {
-        @page { margin: 0; size: 80mm auto; }
+        @page { margin: 0; size: 104mm auto; }
         body { background: white !important; margin: 0; padding: 0; }
         body > :not(#printable-receipt) { display: none !important; }
         
         #printable-receipt { 
           display: block !important; 
-          width: 76mm; /* Slight inner margin for 80mm paper */
+          width: 100mm; /* Safe print area for 4-inch paper */
           margin: 0 auto; 
-          padding: 2mm 0;
-          font-family: monospace, sans-serif;
+          padding: 4mm 0;
+          font-family: 'Courier New', Courier, monospace, sans-serif;
           color: black !important;
         }
         * { -webkit-print-color-adjust: exact !important; color-adjust: exact !important; }
