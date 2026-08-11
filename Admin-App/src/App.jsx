@@ -41,26 +41,21 @@ export default function App() {
   const [customers, setCustomers] = useState([]);
   const [logs, setLogs] = useState([]);
 
-  // REPORT FILTERS
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [filterCashier, setFilterCashier] = useState('ALL');
   const [filterMethod, setFilterMethod] = useState('ALL');
 
-  // FORMS
   const [newUser, setNewUser] = useState({ name: '', pin: '', role: 'cashier', permissions: { canViewOldBills: false, canDiscount: false, canEditCart: true } });
   const [newSalesman, setNewSalesman] = useState({ name: '', commissionRate: '' });
   
-  // MODALS
   const [appAlert, setAppAlert] = useState({ show: false, msg: '' });
   const [appConfirm, setAppConfirm] = useState({ show: false, msg: '', onYes: null });
   const [editingBlockIndex, setEditingBlockIndex] = useState(null);
   const [passbookCustomer, setPassbookCustomer] = useState(null);
   const [editingInvoice, setEditingInvoice] = useState(null);
 
-  const dragItem = useRef();
-  const dragOverItem = useRef();
-
+  const dragItem = useRef(); const dragOverItem = useRef();
   const safeAlert = (msg) => setAppAlert({ show: true, msg });
 
   useEffect(() => { if (serverIP && !isSettingUp) fetchData(); }, [serverIP, isSettingUp]);
@@ -99,18 +94,11 @@ export default function App() {
   const handleAddUser = async () => {
     if (!newUser.name || !newUser.pin) return safeAlert("Name & PIN required.");
     await fetch(`http://${serverIP}:5000/api/users`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newUser) });
-    setNewUser({ name: '', pin: '', role: 'cashier', permissions: { canViewOldBills: false, canDiscount: false, canEditCart: true } }); 
-    fetchData(); safeAlert("User Added.");
+    setNewUser({ name: '', pin: '', role: 'cashier', permissions: { canViewOldBills: false, canDiscount: false, canEditCart: true } }); fetchData(); safeAlert("User Added.");
   };
 
   const deleteUser = async (id) => { await fetch(`http://${serverIP}:5000/api/users/${id}`, { method: 'DELETE' }); fetchData(); };
-  
-  const handleAddSalesman = async () => {
-    if (!newSalesman.name) return safeAlert("Salesman name required.");
-    await fetch(`http://${serverIP}:5000/api/salesmen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSalesman) });
-    setNewSalesman({ name: '', commissionRate: '' }); fetchData(); safeAlert("Salesman Added.");
-  };
-
+  const handleAddSalesman = async () => { if (!newSalesman.name) return safeAlert("Name required."); await fetch(`http://${serverIP}:5000/api/salesmen`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSalesman) }); setNewSalesman({ name: '', commissionRate: '' }); fetchData(); safeAlert("Salesman Added."); };
   const deleteSalesman = async (id) => { await fetch(`http://${serverIP}:5000/api/salesmen/${id}`, { method: 'DELETE' }); fetchData(); };
   const handleClearLogs = async () => { await fetch(`http://${serverIP}:5000/api/logs`, { method: 'DELETE' }); fetchData(); safeAlert("Audit Logs Wiped."); };
 
@@ -137,7 +125,22 @@ export default function App() {
     } catch(e) { safeAlert("Error saving edit."); }
   };
 
-  // DRAG & DROP
+  // ADMIN REPRINT (via Browser HTML Print)
+  const handleReprintInvoice = (invoice) => {
+    const printWindow = window.open('', '', 'width=400,height=600');
+    let html = `<html><head><style>body { font-family: monospace; font-size: 12px; margin: 0; padding: 10px; } table { width: 100%; text-align: left; } .center { text-align: center; } .right { text-align: right; } .bold { font-weight: bold; }</style></head><body>`;
+    html += `<div class="center bold" style="font-size: 18px;">${settings.shopName}</div><hr/>`;
+    html += `<div>Bill No: ${invoice.invoice}</div><div>Date: ${invoice.date} ${invoice.time}</div><hr/>`;
+    html += `<table><tr><th>Item</th><th>Qty</th><th>Rate</th><th class="right">Total</th></tr>`;
+    invoice.items.forEach(i => { html += `<tr><td>${i.name}</td><td>${i.qty}</td><td>${i.price}</td><td class="right">${i.total}</td></tr>`; });
+    html += `</table><hr/>`;
+    html += `<div class="bold" style="display: flex; justify-content: space-between;"><span>TOTAL:</span><span>Rs. ${invoice.amount}</span></div>`;
+    html += `<div>Method: ${invoice.method}</div><hr/><div class="center">${settings.billFooterMsg}</div></body></html>`;
+    
+    printWindow.document.write(html); printWindow.document.close();
+    printWindow.focus(); printWindow.print(); printWindow.close();
+  };
+
   const handleDragStart = (e, index) => { dragItem.current = index; };
   const handleDragEnter = (e, index) => { dragOverItem.current = index; e.preventDefault(); };
   const handleDrop = () => {
@@ -150,18 +153,11 @@ export default function App() {
   };
   const addBlockToLayout = (blockId) => { setSettings({...settings, receiptLayout: [...settings.receiptLayout, { id: blockId, props: { align: 'left', size: 'normal', bold: false } }]}); };
   const removeBlockFromLayout = (index) => { const copy = [...settings.receiptLayout]; copy.splice(index, 1); setSettings({...settings, receiptLayout: copy}); };
-  const updateBlockProps = (prop, value) => {
-    const copy = [...settings.receiptLayout];
-    copy[editingBlockIndex].props[prop] = value;
-    setSettings({...settings, receiptLayout: copy});
-  };
+  const updateBlockProps = (prop, value) => { const copy = [...settings.receiptLayout]; copy[editingBlockIndex].props[prop] = value; setSettings({...settings, receiptLayout: copy}); };
 
-  // EXCEL / CSV EXPORT
   const exportCSV = (filename, rows) => {
     const csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
-    const link = document.createElement("a");
-    link.setAttribute("href", encodeURI(csvContent)); link.setAttribute("download", filename);
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    const link = document.createElement("a"); link.setAttribute("href", encodeURI(csvContent)); link.setAttribute("download", filename); document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
   
   const exportSales = () => {
@@ -177,13 +173,12 @@ export default function App() {
     exportCSV(`${passbookCustomer.name}_Ledger_Statement.csv`, rows);
   };
 
-  // REPORT FILTERING ENGINE
   const filteredSales = sales.filter(s => {
     let matches = true;
     if (filterCashier !== 'ALL' && s.cashier !== filterCashier) matches = false;
     if (filterMethod !== 'ALL' && s.method !== filterMethod) matches = false;
-    if (fromDate && new Date(s.date) < new Date(fromDate)) matches = false;
-    if (toDate && new Date(s.date) > new Date(toDate)) matches = false;
+    if (fromDate && new Date(s.date.split('/').reverse().join('-')) < new Date(fromDate)) matches = false;
+    if (toDate && new Date(s.date.split('/').reverse().join('-')) > new Date(toDate)) matches = false;
     return matches;
   });
 
@@ -203,7 +198,7 @@ export default function App() {
       <div className="h-screen w-screen flex items-center justify-center bg-gray-900 font-sans">
         <div className="bg-white p-8 rounded-lg shadow-2xl w-[450px]">
           <h1 className="text-2xl font-bold border-b pb-3 mb-4 text-blue-900">⚙️ Connect to Master Server</h1>
-          <div className="mb-4"><label className="font-bold text-gray-700">Master Server IP</label><input type="text" value={serverIP} onChange={(e) => setServerIP(e.target.value)} placeholder="192.168.1.50" className="w-full border-2 border-blue-400 p-2 rounded font-bold text-lg bg-blue-50 mt-1" /></div>
+          <div className="mb-4"><label className="font-bold text-gray-700">Master Server IP</label><input type="text" value={serverIP} onChange={(e) => setServerIP(e.target.value)} className="w-full border-2 border-blue-400 p-2 rounded font-bold text-lg bg-blue-50 mt-1 outline-none" /></div>
           <button onClick={() => { localStorage.setItem('server_ip', serverIP); setIsSettingUp(false); }} className="w-full bg-blue-600 text-white font-bold py-3 rounded hover:bg-blue-700 shadow-md">Connect Admin</button>
         </div>
       </div>
@@ -216,7 +211,6 @@ export default function App() {
       {appAlert.show && ( <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4"><div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600"><p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p><button onClick={() => setAppAlert({show:false, msg:''})} className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700">OK</button></div></div> )}
       {appConfirm.show && ( <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4"><div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-yellow-500"><p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appConfirm.msg}</p><div className="flex justify-center gap-4"><button onClick={() => setAppConfirm({show:false, msg:'', onYes:null})} className="bg-gray-300 text-gray-800 font-bold py-2 px-6 rounded hover:bg-gray-400">Cancel</button><button onClick={() => { appConfirm.onYes(); setAppConfirm({show:false, msg:'', onYes:null}); }} className="bg-red-600 text-white font-bold py-2 px-6 rounded hover:bg-red-700">Yes, Proceed</button></div></div></div> )}
 
-      {/* BLOCK PROPERTIES MODAL */}
       {editingBlockIndex !== null && settings.receiptLayout[editingBlockIndex] && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[50] p-4">
           <div className="bg-white rounded-xl shadow-2xl p-6 w-[400px]">
@@ -236,8 +230,7 @@ export default function App() {
                 </select>
               </div>
               <label className="flex items-center gap-2 font-bold text-gray-700 cursor-pointer">
-                <input type="checkbox" checked={settings.receiptLayout[editingBlockIndex].props?.bold || false} onChange={e => updateBlockProps('bold', e.target.checked)} className="w-4 h-4" />
-                Make Text BOLD
+                <input type="checkbox" checked={settings.receiptLayout[editingBlockIndex].props?.bold || false} onChange={e => updateBlockProps('bold', e.target.checked)} className="w-4 h-4" /> Make Text BOLD
               </label>
 
               {settings.receiptLayout[editingBlockIndex].id === 'ITEM_TABLE' && (
@@ -254,14 +247,10 @@ export default function App() {
         </div>
       )}
 
-      {/* EDIT INVOICE MODAL */}
       {editingInvoice && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[60] p-6">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col h-[85vh]">
-            <div className="bg-blue-900 text-white p-4 flex justify-between items-center rounded-t-xl">
-              <h2 className="text-xl font-black">✏️ Edit Invoice: {editingInvoice.invoice}</h2>
-              <button onClick={() => setEditingInvoice(null)} className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded font-bold">Cancel</button>
-            </div>
+            <div className="bg-blue-900 text-white p-4 flex justify-between items-center rounded-t-xl"><h2 className="text-xl font-black">✏️ Edit Invoice: {editingInvoice.invoice}</h2><button onClick={() => setEditingInvoice(null)} className="bg-red-500 hover:bg-red-600 px-3 py-1 rounded font-bold">Cancel</button></div>
             <div className="p-4 flex gap-4 bg-gray-100 border-b">
               <div><label className="text-xs font-bold text-gray-500 block">Customer Mobile</label><input type="text" value={editingInvoice.customerMobile} onChange={e=>setEditingInvoice({...editingInvoice, customerMobile: e.target.value})} className="border p-2 rounded font-bold" /></div>
               <div><label className="text-xs font-bold text-gray-500 block">Payment Mode</label><select value={editingInvoice.method} onChange={e=>setEditingInvoice({...editingInvoice, method: e.target.value})} className="border p-2 rounded font-bold"><option>CASH</option><option>UPI</option><option>CREDIT</option></select></div>
@@ -297,23 +286,23 @@ export default function App() {
           <button onClick={() => { setActiveTab('ANALYTICS'); setSubTab('SUPPLIER'); }} className={`px-4 py-1.5 font-bold rounded ${activeTab === 'ANALYTICS' ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>📈 Analytics & Export</button>
           <button onClick={() => { setActiveTab('LEDGERS'); setSubTab('INVOICES'); }} className={`px-4 py-1.5 font-bold rounded ${activeTab === 'LEDGERS' ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>🧾 Bills & Khata</button>
           <button onClick={() => setActiveTab('DESIGNER')} className={`px-4 py-1.5 font-bold rounded ${activeTab === 'DESIGNER' ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>📝 Designer</button>
-          <button onClick={() => setActiveTab('STAFF')} className={`px-4 py-1.5 font-bold rounded ${activeTab === 'STAFF' ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>👥 Staff & Salesmen</button>
+          <button onClick={() => setActiveTab('STAFF')} className={`px-4 py-1.5 font-bold rounded ${activeTab === 'STAFF' ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>👥 Staff Permissions</button>
           <button onClick={() => setActiveTab('FIRM')} className={`px-4 py-1.5 font-bold rounded ${activeTab === 'FIRM' ? 'bg-blue-600' : 'hover:bg-gray-700'}`}>⚙️ Settings & Logs</button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
         
-        {/* --- 1. DASHBOARD --- */}
+        {/* --- 1. DASHBOARD WITH RECENT SALES --- */}
         {activeTab === 'DASHBOARD' && (
           <div className="max-w-6xl mx-auto flex flex-col gap-6 mt-4">
             <div className="grid grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-blue-500"><h3 className="text-gray-500 font-bold text-sm uppercase">Lifetime Sales Revenue</h3><div className="text-4xl font-black text-gray-800 mt-2">₹{sales.reduce((a,b)=>a+parseFloat(b.amount||0),0).toLocaleString('en-IN')}</div></div>
-              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-green-500"><h3 className="text-gray-500 font-bold text-sm uppercase">Today's Total Sales</h3><div className="text-4xl font-black text-gray-800 mt-2">₹{todaySalesValuation.toLocaleString('en-IN')}</div></div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-blue-500"><h3 className="text-gray-500 font-bold text-sm uppercase">Filtered Sales Revenue</h3><div className="text-4xl font-black text-gray-800 mt-2">₹{totalSalesValuation.toLocaleString('en-IN')}</div></div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-green-500"><h3 className="text-gray-500 font-bold text-sm uppercase">Total Inventory Value (Purchase)</h3><div className="text-4xl font-black text-gray-800 mt-2">₹{totalStockValuation.toLocaleString('en-IN')}</div></div>
               <div className="bg-white p-6 rounded-xl shadow-sm border-l-8 border-purple-500 flex flex-col justify-center items-center cursor-pointer hover:bg-gray-50" onClick={() => fetchData()}><span className="text-4xl mb-2">🔄</span><span className="font-bold text-gray-700">Sync Master Server</span></div>
             </div>
 
-            {/* RESTORED: RECENT SALES TABLE */}
+            {/* RESTORED AND SECURED: RECENT SALES TABLE */}
             <div className="bg-white border rounded-xl shadow-sm overflow-hidden mt-4">
               <div className="bg-gray-100 p-4 border-b font-bold text-gray-700 text-lg">📝 Recent Sales History</div>
               <table className="w-full text-left">
@@ -324,8 +313,7 @@ export default function App() {
                   {sales.slice().reverse().slice(0, 15).map((s, i) => (
                     <tr key={i} className="border-b hover:bg-blue-50">
                       <td className="p-3 font-bold text-blue-700">{s.invoice} {s.isEdited && <span className="text-[10px] bg-yellow-200 text-yellow-800 px-1 rounded ml-1">EDITED</span>}</td>
-                      <td className="p-3">{s.date} {s.time}</td>
-                      <td className="p-3 font-bold">{s.cashier}</td>
+                      <td className="p-3">{s.date} {s.time}</td><td className="p-3 font-bold">{s.cashier}</td>
                       <td className="p-3">{s.customerName || 'Walk-in'} <span className="text-xs text-gray-500 block">{s.customerMobile}</span></td>
                       <td className="p-3"><span className={`px-2 py-1 rounded text-xs font-bold ${s.method === 'CASH' ? 'bg-green-100 text-green-800' : s.method === 'UPI' ? 'bg-purple-100 text-purple-800' : 'bg-red-100 text-red-800'}`}>{s.method}</span></td>
                       <td className="p-3 text-right font-bold text-lg">₹{parseFloat(s.amount).toLocaleString('en-IN')}</td>
@@ -335,53 +323,28 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-
           </div>
         )}
 
         {/* --- 2. ANALYTICS, EXPORTS & FILTERS --- */}
         {activeTab === 'ANALYTICS' && (
           <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border overflow-hidden mt-4">
-            
-            {/* DATA FILTERS CONTROL BAR */}
             <div className="bg-gray-800 text-white p-4 flex gap-4 items-center flex-wrap">
               <div><label className="text-xs font-bold text-gray-300 block">From Date</label><input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} className="bg-gray-700 text-white p-1 rounded font-bold text-sm outline-none" /></div>
               <div><label className="text-xs font-bold text-gray-300 block">To Date</label><input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} className="bg-gray-700 text-white p-1 rounded font-bold text-sm outline-none" /></div>
-              <div><label className="text-xs font-bold text-gray-300 block">Filter Cashier</label>
-                <select value={filterCashier} onChange={e=>setFilterCashier(e.target.value)} className="bg-gray-700 text-white p-1 rounded font-bold text-sm outline-none">
-                  <option value="ALL">All Cashiers</option>{users.map(u=><option key={u.id} value={u.name}>{u.name}</option>)}
-                </select>
-              </div>
-              <div><label className="text-xs font-bold text-gray-300 block">Filter Payment</label>
-                <select value={filterMethod} onChange={e=>setFilterMethod(e.target.value)} className="bg-gray-700 text-white p-1 rounded font-bold text-sm outline-none">
-                  <option value="ALL">All Payment Methods</option><option value="CASH">CASH</option><option value="UPI">UPI</option><option value="CREDIT">CREDIT (Udhaar)</option>
-                </select>
-              </div>
-              <button onClick={() => { setFromDate(''); setToDate(''); setFilterCashier('ALL'); setFilterMethod('ALL'); }} className="bg-gray-600 hover:bg-gray-500 text-white px-3 py-1 rounded text-xs font-bold mt-4">Clear Filters</button>
+              <div><label className="text-xs font-bold text-gray-300 block">Filter Cashier</label><select value={filterCashier} onChange={e=>setFilterCashier(e.target.value)} className="bg-gray-700 text-white p-1 rounded font-bold text-sm outline-none"><option value="ALL">All Cashiers</option>{users.map(u=><option key={u.id} value={u.name}>{u.name}</option>)}</select></div>
+              <div><label className="text-xs font-bold text-gray-300 block">Filter Payment</label><select value={filterMethod} onChange={e=>setFilterMethod(e.target.value)} className="bg-gray-700 text-white p-1 rounded font-bold text-sm outline-none"><option value="ALL">All Methods</option><option value="CASH">CASH</option><option value="UPI">UPI</option><option value="CREDIT">CREDIT</option></select></div>
+              <button onClick={() => { setFromDate(''); setToDate(''); setFilterCashier('ALL'); setFilterMethod('ALL'); }} className="bg-gray-600 hover:bg-gray-500 text-white px-3 py-1 rounded text-xs font-bold mt-4">Clear</button>
             </div>
-
             <div className="bg-gray-100 p-4 border-b flex justify-between items-center">
-              <div className="flex gap-4">
-                <button onClick={() => setSubTab('SUPPLIER')} className={`px-6 py-2 font-bold rounded ${subTab === 'SUPPLIER' ? 'bg-blue-600 text-white shadow-inner' : 'bg-white border text-gray-700 hover:bg-gray-50'}`}>📦 Supplier Analytics</button>
-                <button onClick={() => setSubTab('SALESMAN')} className={`px-6 py-2 font-bold rounded ${subTab === 'SALESMAN' ? 'bg-blue-600 text-white shadow-inner' : 'bg-white border text-gray-700 hover:bg-gray-50'}`}>👔 Salesman Commissions</button>
-              </div>
+              <div className="flex gap-4"><button onClick={() => setSubTab('SUPPLIER')} className={`px-6 py-2 font-bold rounded ${subTab === 'SUPPLIER' ? 'bg-blue-600 text-white shadow-inner' : 'bg-white border text-gray-700'}`}>📦 Supplier Analytics</button><button onClick={() => setSubTab('SALESMAN')} className={`px-6 py-2 font-bold rounded ${subTab === 'SALESMAN' ? 'bg-blue-600 text-white shadow-inner' : 'bg-white border text-gray-700'}`}>👔 Salesman Commissions</button></div>
               <button onClick={exportSales} className="bg-green-600 hover:bg-green-700 text-white font-bold px-4 py-2 rounded shadow text-sm">📄 Export Sales Tax CSV</button>
             </div>
-            
             {subTab === 'SUPPLIER' && (
-              <table className="w-full text-left">
-                <thead className="bg-gray-50 border-b"><tr><th className="p-4">Supplier Name</th><th className="p-4 text-center">Remaining Stock (Qty)</th><th className="p-4 text-right">Dead Stock Value</th><th className="p-4 text-center">Total Sold (Qty)</th><th className="p-4 text-right">Generated Revenue</th></tr></thead>
-                <tbody>
-                  {Object.keys(supplierStats).map((sup, i) => (
-                    <tr key={i} className="border-b hover:bg-yellow-50">
-                      <td className="p-4 font-black text-gray-800">{sup}</td><td className="p-4 text-center font-bold text-gray-500">{supplierStats[sup].remainingQty} Pcs</td><td className="p-4 text-right font-black text-red-600">₹{supplierStats[sup].remainingValue.toLocaleString('en-IN')}</td>
-                      <td className="p-4 text-center font-bold text-gray-500">{supplierStats[sup].soldQty} Pcs</td><td className="p-4 text-right font-black text-green-600 text-lg">₹{supplierStats[sup].salesValue.toLocaleString('en-IN')}</td>
-                    </tr>
-                  ))}
-                </tbody>
+              <table className="w-full text-left"><thead className="bg-gray-50 border-b"><tr><th className="p-4">Supplier Name</th><th className="p-4 text-center">Remaining Stock (Qty)</th><th className="p-4 text-right">Dead Stock Value</th><th className="p-4 text-center">Total Sold (Qty)</th><th className="p-4 text-right">Generated Revenue</th></tr></thead>
+                <tbody>{Object.keys(supplierStats).map((sup, i) => (<tr key={i} className="border-b hover:bg-yellow-50"><td className="p-4 font-black text-gray-800">{sup}</td><td className="p-4 text-center font-bold text-gray-500">{supplierStats[sup].remainingQty} Pcs</td><td className="p-4 text-right font-black text-red-600">₹{supplierStats[sup].remainingValue.toLocaleString('en-IN')}</td><td className="p-4 text-center font-bold text-gray-500">{supplierStats[sup].soldQty} Pcs</td><td className="p-4 text-right font-black text-green-600 text-lg">₹{supplierStats[sup].salesValue.toLocaleString('en-IN')}</td></tr>))}</tbody>
               </table>
             )}
-
             {subTab === 'SALESMAN' && (
               <table className="w-full text-left"><thead className="bg-gray-50 border-b"><tr><th className="p-4">Salesman Name</th><th className="p-4 text-right">Total Sold (Value)</th><th className="p-4 text-right">Commission Earned</th></tr></thead>
                 <tbody>{Object.keys(salesmanStats).map((sm, i) => (<tr key={i} className="border-b hover:bg-blue-50"><td className="p-4 font-black text-gray-800">{sm}</td><td className="p-4 text-right font-bold text-gray-600 text-lg">₹{salesmanStats[sm].totalSales.toLocaleString('en-IN')}</td><td className="p-4 text-right font-black text-green-700 text-xl">₹{salesmanStats[sm].commission.toLocaleString('en-IN')}</td></tr>))}</tbody>
@@ -394,8 +357,8 @@ export default function App() {
         {activeTab === 'LEDGERS' && (
           <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border overflow-hidden mt-4">
             <div className="bg-gray-100 p-4 border-b flex gap-4">
-              <button onClick={() => { setSubTab('INVOICES'); setPassbookCustomer(null); }} className={`px-6 py-2 font-bold rounded ${subTab === 'INVOICES' ? 'bg-red-600 text-white shadow-inner' : 'bg-white border text-gray-700 hover:bg-gray-50'}`}>🛑 Edit/Void Invoices</button>
-              <button onClick={() => setSubTab('KHATA')} className={`px-6 py-2 font-bold rounded ${subTab === 'KHATA' ? 'bg-blue-600 text-white shadow-inner' : 'bg-white border text-gray-700 hover:bg-gray-50'}`}>📒 Customer Khata Passbooks</button>
+              <button onClick={() => { setSubTab('INVOICES'); setPassbookCustomer(null); }} className={`px-6 py-2 font-bold rounded ${subTab === 'INVOICES' ? 'bg-red-600 text-white shadow-inner' : 'bg-white border text-gray-700'}`}>🛑 Edit/Void Invoices</button>
+              <button onClick={() => setSubTab('KHATA')} className={`px-6 py-2 font-bold rounded ${subTab === 'KHATA' ? 'bg-blue-600 text-white shadow-inner' : 'bg-white border text-gray-700'}`}>📒 Customer Khata Passbooks</button>
             </div>
             
             {subTab === 'INVOICES' && (
@@ -406,8 +369,10 @@ export default function App() {
                       <td className="p-3 font-bold text-blue-700">{s.invoice} {s.isEdited && <span className="text-[10px] bg-yellow-200 text-yellow-800 px-1 rounded ml-1">EDITED</span>}</td>
                       <td className="p-3">{s.date} {s.time}</td><td className="p-3">{s.customerName || 'Walk-in'}</td><td className="p-3 font-bold">{s.method}</td><td className="p-3 text-right font-bold text-base">₹{s.amount}</td>
                       <td className="p-3 text-center flex justify-center gap-2">
+                        {/* THE MISSING REPRINT BUTTON ADDED HERE */}
+                        <button onClick={() => handleReprintInvoice(s)} className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded font-bold text-xs shadow">🖨️ REPRINT</button>
                         <button onClick={() => setEditingInvoice(s)} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded font-bold text-xs shadow">EDIT</button>
-                        <button onClick={() => setAppConfirm({ show: true, msg: `DANGER: Void Bill ${s.invoice}?\n\nThis will permanently delete this sale, restore inventory stock, and reverse Udhaar.`, onYes: () => handleVoidInvoice(s.invoice) })} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded font-bold text-xs shadow">VOID</button>
+                        <button onClick={() => setAppConfirm({ show: true, msg: `DANGER: Void Bill ${s.invoice}?`, onYes: () => handleVoidInvoice(s.invoice) })} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded font-bold text-xs shadow">VOID</button>
                       </td>
                     </tr>
                   ))}
@@ -509,8 +474,6 @@ export default function App() {
         {/* --- 5. STAFF & SALESMEN --- */}
         {activeTab === 'STAFF' && (
           <div className="max-w-6xl mx-auto flex flex-col gap-6 mt-4">
-            
-            {/* System Logins & Granular Permissions */}
             <div className="bg-white rounded-xl shadow-sm border p-6">
               <h2 className="text-xl font-black text-gray-800 border-b pb-3 mb-4">🖥️ System Logins & Granular Permissions</h2>
               <div className="flex gap-4 mb-4 border bg-gray-50 p-4 rounded-lg">
@@ -532,7 +495,6 @@ export default function App() {
               </table>
             </div>
 
-            {/* RESTORED: FLOOR SALESMEN MANAGEMENT */}
             <div className="bg-white rounded-xl shadow-sm border p-6">
               <h2 className="text-xl font-black text-gray-800 border-b pb-3 mb-4">👔 Floor Salesmen (For Commission Tracking)</h2>
               <div className="flex gap-4 mb-4 border bg-gray-50 p-4 rounded-lg">
@@ -544,11 +506,10 @@ export default function App() {
                 <tbody>{salesmen.map(sm => (<tr key={sm.id} className="border-b hover:bg-gray-50"><td className="p-3 font-bold">{sm.name}</td><td className="p-3 font-black text-green-700">{sm.commissionRate}%</td><td className="p-3 text-right"><button onClick={() => deleteSalesman(sm.id)} className="bg-red-500 text-white px-3 py-1 rounded text-xs font-bold">Delete</button></td></tr>))}</tbody>
               </table>
             </div>
-
           </div>
         )}
 
-        {/* --- 6. FIRM SETTINGS & AUDIT LOGS --- */}
+        {/* --- 6. FIRM SETTINGS & LOGS --- */}
         {activeTab === 'FIRM' && (
           <div className="max-w-6xl mx-auto flex gap-6 mt-4">
             <div className="w-1/3 bg-white rounded-xl shadow-sm border p-6 flex flex-col h-[650px]">
@@ -561,11 +522,7 @@ export default function App() {
                 <div><label className="font-bold text-xs text-gray-500">Address</label><textarea value={settings.address || ''} onChange={e => setSettings({...settings, address: e.target.value})} rows="2" className="w-full border-2 p-2 rounded font-bold"></textarea></div>
                 <div><label className="font-bold text-xs text-gray-500">Phone & Email</label><input type="text" value={settings.phone || ''} onChange={e => setSettings({...settings, phone: e.target.value})} className="w-full border-2 p-2 rounded font-bold" /></div>
                 <div><label className="font-bold text-xs text-gray-500">Bill Footer Message</label><input type="text" value={settings.billFooterMsg || ''} onChange={e => setSettings({...settings, billFooterMsg: e.target.value})} className="w-full border-2 p-2 rounded font-bold bg-green-50" /></div>
-                <div>
-                  <label className="font-bold text-xs text-gray-500 block mb-1">Firm Logo Image</label>
-                  <input type="file" accept="image/*" onChange={handleLogoUpload} className="text-xs" />
-                  {settings.logoBase64 && <img src={settings.logoBase64} alt="Logo" className="h-12 mt-2 object-contain border" />}
-                </div>
+                <div><label className="font-bold text-xs text-gray-500 block mb-1">Firm Logo Image</label><input type="file" accept="image/*" onChange={handleLogoUpload} className="text-xs" />{settings.logoBase64 && <img src={settings.logoBase64} alt="Logo" className="h-12 mt-2 object-contain border" />}</div>
               </div>
             </div>
             
