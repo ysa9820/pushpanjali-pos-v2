@@ -47,14 +47,20 @@ function startServer() {
     if (!fs.existsSync(dbPath)) {
       dbCache = { 
         inventory: [], sales: [], customers: [], payments: [], salesmen: [],
-        users: [{ id: 1, name: 'Master Admin', pin: '1234', role: 'admin', permissions: { canViewOldBills: true, canDiscount: true } }],
+        users: [{ id: 1, name: 'Master Admin', pin: '1234', role: 'admin', permissions: { canViewOldBills: true, canDiscount: true, canEditCart: true } }],
         settings: { 
-          shopName: "Pushpanjali Fashion", phone: "", address: "", gstin: "", billFooterMsg: "Thank you for shopping!",
-          minReceiptLines: 32,
+          shopName: "Pushpanjali Fashion", phone: "", address: "", gstin: "", upiId: "", logoBase64: "", billFooterMsg: "Thank you for shopping!",
+          defaultGstRate: 5, minReceiptLines: 32,
           receiptLayout: [
             { id: "HEADER_SHOPNAME", props: { align: "center", size: "double", bold: true } },
+            { id: "HEADER_ADDRESS_1", props: { align: "center", size: "normal", bold: false } },
+            { id: "DIVIDER_DASHED", props: {} },
+            { id: "BILL_INFO", props: { align: "left" } },
             { id: "ITEM_TABLE", props: { showSrNo: false, showBarcode: true, showSize: true } },
-            { id: "TOTAL_AMOUNT", props: { align: "right" } }
+            { id: "DIVIDER_SOLID", props: {} },
+            { id: "TAX_BREAKDOWN", props: { align: "right" } },
+            { id: "TOTAL_AMOUNT", props: { align: "right", size: "double", bold: true } },
+            { id: "FOOTER_MESSAGE", props: { align: "center" } }
           ]
         }
       };
@@ -62,17 +68,16 @@ function startServer() {
     } else {
       try { 
         dbCache = JSON.parse(fs.readFileSync(dbPath, 'utf8')); 
-        
-        // Auto-upgrade schemas
         if (!dbCache.salesmen) dbCache.salesmen = [];
         if (!dbCache.payments) dbCache.payments = [];
-        
-        // Upgrade legacy users to have permissions
+        if (!dbCache.settings.upiId) dbCache.settings.upiId = "";
+        if (!dbCache.settings.logoBase64) dbCache.settings.logoBase64 = "";
+        if (!dbCache.settings.defaultGstRate) dbCache.settings.defaultGstRate = 5;
+
         dbCache.users = dbCache.users.map(u => ({
-          ...u, permissions: u.permissions || (u.role === 'admin' ? { canViewOldBills: true, canDiscount: true } : { canViewOldBills: false, canDiscount: false })
+          ...u, permissions: u.permissions || (u.role === 'admin' ? { canViewOldBills: true, canDiscount: true, canEditCart: true } : { canViewOldBills: false, canDiscount: false, canEditCart: true })
         }));
 
-        // Upgrade legacy receipt layout (Array of strings to Array of Objects)
         if (dbCache.settings.receiptLayout && typeof dbCache.settings.receiptLayout[0] === 'string') {
           dbCache.settings.receiptLayout = dbCache.settings.receiptLayout.map(id => ({ id, props: {} }));
         }
@@ -88,7 +93,7 @@ function startServer() {
 
   loadDatabaseToRAM();
 
-  // --- API ROUTES: SETTINGS & USERS & SALESMEN ---
+  // --- API ROUTES ---
   serverApp.get('/api/settings', (req, res) => res.json(dbCache.settings));
   serverApp.post('/api/settings', (req, res) => { dbCache.settings = { ...dbCache.settings, ...req.body }; atomicSaveToDisk(); res.json({ success: true }); });
   
@@ -96,7 +101,7 @@ function startServer() {
   serverApp.get('/api/users', (req, res) => res.json(dbCache.users));
   serverApp.post('/api/users', (req, res) => { 
     const { id, name, pin, role, permissions } = req.body; 
-    const perms = permissions || { canViewOldBills: false, canDiscount: false };
+    const perms = permissions || { canViewOldBills: false, canDiscount: false, canEditCart: true };
     if (id) { 
       const index = dbCache.users.findIndex(u => u.id === id); 
       if (index >= 0) dbCache.users[index] = { id, name, pin, role, permissions: perms }; 
@@ -108,33 +113,25 @@ function startServer() {
   serverApp.delete('/api/users/:id', (req, res) => { dbCache.users = dbCache.users.filter(u => u.id !== parseInt(req.params.id)); writeAuditLog("Admin", "Deleted User", `Revoked access for user ID: ${req.params.id}`); atomicSaveToDisk(); res.json({ success: true }); });
 
   serverApp.get('/api/salesmen', (req, res) => res.json(dbCache.salesmen));
-  serverApp.post('/api/salesmen', (req, res) => { dbCache.salesmen.push({ id: Date.now(), name: req.body.name, commissionRate: req.body.commissionRate || 0 }); atomicSaveToDisk(); res.json({ success: true }); });
+  serverApp.post('/api/salesmen', (req, res) => { dbCache.salesmen.push({ id: Date.now(), name: req.body.name, commissionRate: parseFloat(req.body.commissionRate) || 0 }); atomicSaveToDisk(); res.json({ success: true }); });
   serverApp.delete('/api/salesmen/:id', (req, res) => { dbCache.salesmen = dbCache.salesmen.filter(s => s.id !== parseInt(req.params.id)); atomicSaveToDisk(); res.json({ success: true }); });
 
-  // --- API ROUTES: CUSTOMERS & KHATA LEDGER ---
-  serverApp.get('/api/customers', (req, res) => res.json(dbCache.customers)); // Returns ALL customers (including 0 balance)
+  serverApp.get('/api/customers', (req, res) => res.json(dbCache.customers));
   
   serverApp.post('/api/customers/pay', (req, res) => {
     const { customerMobile, amountPaid, method, cashierName } = req.body;
     let customer = dbCache.customers.find(c => c.mobile === customerMobile);
-    
     if (customer) {
       customer.balance -= Number(amountPaid);
       const payRecord = { id: Date.now(), date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), amount: Number(amountPaid), method, customerName: customer.name, customerMobile, cashier: cashierName };
-      
       customer.history.push({ date: payRecord.date, time: payRecord.time, type: 'PAYMENT_RECEIVED', method, amount: payRecord.amount, newBalance: customer.balance, invoice: null });
       dbCache.payments.push(payRecord);
-      
-      atomicSaveToDisk();
-      res.json({ success: true, payment: payRecord, newBalance: customer.balance });
-    } else {
-      res.status(404).json({ error: "Customer not found" });
-    }
+      atomicSaveToDisk(); res.json({ success: true, payment: payRecord, newBalance: customer.balance });
+    } else { res.status(404).json({ error: "Customer not found" }); }
   });
 
-  serverApp.get('/api/payments', (req, res) => res.json(dbCache.payments)); 
+  serverApp.get('/api/payments', (req, res) => res.json(dbCache.payments));
 
-  // --- API ROUTES: INVENTORY ---
   serverApp.get('/api/inventory', (req, res) => res.json(dbCache.inventory));
   serverApp.post('/api/inventory', (req, res) => {
     const { barcode, name, category, qty, price, purchasePrice, brand, size, hsn, supplierName } = req.body;
@@ -161,11 +158,10 @@ function startServer() {
     atomicSaveToDisk(); res.json({ success: true }); 
   });
 
-  // --- API ROUTES: SALES, VOIDING, AND EDITING ---
   serverApp.get('/api/sales', (req, res) => res.json(dbCache.sales));
   
   serverApp.post('/api/checkout', (req, res) => {
-    const { cart, totalAmount, paymentMethod, cashierName, customerName, customerMobile, terminalId } = req.body;
+    const { cart, subTotal, discount, taxAmount, totalAmount, paymentMethod, cashierName, customerName, customerMobile, terminalId } = req.body;
     
     cart.forEach(cartItem => { 
       if (cartItem.barcode) { 
@@ -186,26 +182,33 @@ function startServer() {
       customer.history.push({ date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), invoice: invoiceNo, type: 'DEBIT_SALE', amount: Number(totalAmount), newBalance: customer.balance }); 
     }
 
-    const saleRecord = { invoice: invoiceNo, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), amount: totalAmount, method: paymentMethod, cashier: cashierName, customerName: customerName || '', customerMobile: customerMobile || '', terminal: terminalId, items: cart };
+    const gstRate = dbCache.settings.defaultGstRate || 5;
+    const cgst = Number((taxAmount / 2).toFixed(2));
+    const sgst = Number((taxAmount / 2).toFixed(2));
+
+    const saleRecord = { 
+      invoice: invoiceNo, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), 
+      subTotal: subTotal || totalAmount, discount: discount || 0, taxAmount: taxAmount || 0, cgst, sgst, gstRate,
+      amount: totalAmount, method: paymentMethod, cashier: cashierName, 
+      customerName: customerName || '', customerMobile: customerMobile || '', terminal: terminalId, items: cart 
+    };
+    
     dbCache.sales.push(saleRecord); atomicSaveToDisk(); res.json({ success: true, sale: saleRecord });
   });
 
-  // NEW: COMPLEX INVOICE EDITING MATH
   serverApp.put('/api/sales/:invoice', (req, res) => {
     const invoiceNo = req.params.invoice;
-    const { cart, totalAmount, paymentMethod, customerName, customerMobile, adminName } = req.body;
+    const { cart, subTotal, discount, taxAmount, totalAmount, paymentMethod, customerName, customerMobile, adminName } = req.body;
     
     const saleIndex = dbCache.sales.findIndex(s => s.invoice === invoiceNo);
     if (saleIndex < 0) return res.status(404).json({ error: "Invoice not found" });
     const oldSale = dbCache.sales[saleIndex];
 
-    // 1. Revert Old Inventory
     oldSale.items.forEach(oldItem => {
       const invIndex = dbCache.inventory.findIndex(inv => inv.barcode === oldItem.barcode);
       if (invIndex >= 0) dbCache.inventory[invIndex].qty += Number(oldItem.qty);
     });
 
-    // 2. Revert Old Khata
     if (oldSale.method === 'CREDIT' && oldSale.customerMobile) {
       const customer = dbCache.customers.find(c => c.mobile === oldSale.customerMobile);
       if (customer) {
@@ -214,13 +217,11 @@ function startServer() {
       }
     }
 
-    // 3. Apply New Inventory
     cart.forEach(newItem => {
       const invIndex = dbCache.inventory.findIndex(inv => inv.barcode === newItem.barcode);
       if (invIndex >= 0) dbCache.inventory[invIndex].qty -= Number(newItem.qty);
     });
 
-    // 4. Apply New Khata
     if (paymentMethod === 'CREDIT' && customerMobile) {
       let customer = dbCache.customers.find(c => c.mobile === customerMobile);
       if (!customer) {
@@ -231,16 +232,16 @@ function startServer() {
       customer.history.push({ date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString(), invoice: invoiceNo, type: 'EDIT_APPLIED', amount: Number(totalAmount), newBalance: customer.balance });
     }
 
-    // 5. Update Record & Log
-    const updatedSale = { ...oldSale, amount: totalAmount, method: paymentMethod, customerName, customerMobile, items: cart, isEdited: true, editDate: new Date().toLocaleDateString() };
+    const cgst = Number(((taxAmount || 0) / 2).toFixed(2));
+    const sgst = Number(((taxAmount || 0) / 2).toFixed(2));
+
+    const updatedSale = { ...oldSale, subTotal, discount, taxAmount, cgst, sgst, amount: totalAmount, method: paymentMethod, customerName, customerMobile, items: cart, isEdited: true, editDate: new Date().toLocaleDateString() };
     dbCache.sales[saleIndex] = updatedSale;
     writeAuditLog(adminName || "Admin", "EDITED INVOICE", `Edited Bill ${invoiceNo}. Old Amt: Rs.${oldSale.amount}, New Amt: Rs.${totalAmount}`);
     
-    atomicSaveToDisk();
-    res.json({ success: true, sale: updatedSale });
+    atomicSaveToDisk(); res.json({ success: true, sale: updatedSale });
   });
 
-  // VOID / CANCEL INVOICE
   serverApp.delete('/api/sales/:invoice', (req, res) => {
     const invoiceNo = req.params.invoice;
     const adminName = req.body.adminName || "Admin";
@@ -261,21 +262,17 @@ function startServer() {
       }
       dbCache.sales.splice(saleIndex, 1);
       writeAuditLog(adminName, "VOIDED INVOICE", `Voided Bill ${invoiceNo} for Rs.${sale.amount}. Stock restored.`);
-      atomicSaveToDisk();
-      res.json({ success: true });
-    } else {
-      res.status(404).json({ error: "Invoice not found" });
-    }
+      atomicSaveToDisk(); res.json({ success: true });
+    } else { res.status(404).json({ error: "Invoice not found" }); }
   });
 
-  // --- API ROUTES: AUDIT LOGS ---
   serverApp.get('/api/logs', (req, res) => {
     if (fs.existsSync(logPath)) res.json(JSON.parse(fs.readFileSync(logPath, 'utf8')));
     else res.json([]);
   });
 
   serverApp.delete('/api/logs', (req, res) => {
-    writeAuditLog("Admin", "CLEARED LOGS", "Admin permanently wiped the audit history."); 
+    writeAuditLog("Admin", "CLEARED LOGS", "Admin permanently wiped audit history."); 
     setTimeout(() => { fs.writeFileSync(logPath, JSON.stringify([], null, 2)); res.json({ success: true }); }, 100);
   });
 
@@ -285,21 +282,15 @@ function startServer() {
 app.whenReady().then(() => {
   app.setLoginItemSettings({ openAtLogin: true, path: app.getPath('exe') });
   startServer();
-  
   win = new BrowserWindow({ width: 550, height: 450, autoHideMenuBar: true, webPreferences: { nodeIntegration: true }, icon: nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAoSURBVDhPY3jP4PgfCDmA2Hhg1YAAAxoYRh2AA4yhA0YdgAOMoQMGAAx+Ew3w7U+KAAAAAElFTkSuQmCC') });
-  
   const htmlContent = `<!DOCTYPE html><html><body style="font-family: sans-serif; background-color: #f3f4f6; color: #1f2937; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;"><div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; border-top: 5px solid #2563eb;"><h1 style="color: #1e3a8a; margin-top: 0; font-size: 24px;">🧠 Master Server Engine</h1><div style="background: #d1fae5; color: #047857; padding: 5px 15px; border-radius: 20px; font-weight: bold; display: inline-block; margin-bottom: 20px;">● ONLINE & SECURE</div><p style="margin: 0; color: #4b5563; font-weight: bold;">Your POS & Stock Room IP Address is:</p><div style="font-size: 36px; font-weight: bold; font-family: monospace; background: #e5e7eb; padding: 10px; border-radius: 5px; margin: 10px 0; letter-spacing: 2px;">${getLocalIP()}</div></div></body></html>`;
   win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent));
-  
   win.on('close', (event) => { if (!isQuitting) { event.preventDefault(); win.hide(); } return false; });
-  
   const icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAoSURBVDhPY3jP4PgfCDmA2Hhg1YAAAxoYRh2AA4yhA0YdgAOMoQMGAAx+Ew3w7U+KAAAAAElFTkSuQmCC');
   tray = new Tray(icon);
   tray.setToolTip('Pushpanjali Master Server');
-  
   const contextMenu = Menu.buildFromTemplate([{ label: 'Show Server Status', click: () => win.show() }, { type: 'separator' }, { label: 'Quit Server', click: () => { isQuitting = true; app.quit(); } }]);
-  tray.setContextMenu(contextMenu); 
-  tray.on('double-click', () => win.show());
+  tray.setContextMenu(contextMenu); tray.on('double-click', () => win.show());
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
