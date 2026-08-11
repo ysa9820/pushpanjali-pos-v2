@@ -7,9 +7,9 @@ const safeAlert = (msg) => { if (document.activeElement) document.activeElement.
 const safeConfirm = (msg) => { if (document.activeElement) document.activeElement.blur(); return window.confirm(msg); };
 
 export default function App() {
-  // Setup & Settings
+  // Setup
   const [serverIP, setServerIP] = useState(localStorage.getItem('server_ip') || '');
-  const [printerName, setPrinterName] = useState(localStorage.getItem('receipt_printer') || '');
+  const [printerPath, setPrinterPath] = useState(localStorage.getItem('receipt_printer') || '\\\\localhost\\Retsol');
   const [isSettingUp, setIsSettingUp] = useState(!localStorage.getItem('server_ip'));
   const [firmSettings, setFirmSettings] = useState({});
 
@@ -24,11 +24,11 @@ export default function App() {
   const [barcodeInput, setBarcodeInput] = useState('');
   const barcodeRef = useRef(null);
   const [isPrinting, setIsPrinting] = useState(false);
-  const [lastInvoice, setLastInvoice] = useState(null);
+  const [lastInvoice, setLastInvoice] = useState(null); // Just for screen preview now
 
   // Customer / Khata
   const [customer, setCustomer] = useState({ name: '', mobile: '' });
-  const [paymentMode, setPaymentMode] = useState('CASH'); 
+  const [paymentMode, setPaymentMode] = useState('CASH');
 
   const [appAlert, setAppAlert] = useState({ show: false, msg: '' });
   const [appConfirm, setAppConfirm] = useState({ show: false, msg: '', onYes: null });
@@ -48,11 +48,11 @@ export default function App() {
     if (ipcRenderer) {
       ipcRenderer.on('print-finished', (event, result) => {
         setIsPrinting(false);
-        if (!result.success) setAppAlert({ show: true, msg: `❌ Printer Error:\nMake sure your 4-inch printer is named exactly "${printerName}" in Windows.` });
+        if (!result.success) setAppAlert({ show: true, msg: `❌ Printer Error:\nMake sure your printer is shared in Windows as "${printerPath}"` });
       });
     }
     return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
-  }, [printerName]);
+  }, [printerPath]);
 
   const fetchInventory = () => { fetch(`http://${serverIP}:5000/api/inventory`).then(res => res.json()).then(setInventory).catch(() => {}); };
 
@@ -75,10 +75,10 @@ export default function App() {
     if (!code) return;
 
     const item = inventory.find(i => i.barcode.toLowerCase() === code);
-    if (!item) { setAppAlert({ show: true, msg: `Barcode [${barcodeInput}] not found!` }); setBarcodeInput(''); return; }
+    if (!item) { setAppAlert({ show: true, msg: `Barcode [${barcodeInput}] not found in master!` }); setBarcodeInput(''); return; }
     
     if (item.qty <= 0) {
-      setAppConfirm({ show: true, msg: `Item is OUT OF STOCK. Sell anyway?`, onYes: () => { addToCart(item, code); } });
+      setAppConfirm({ show: true, msg: `Item is OUT OF STOCK in database. Sell anyway?`, onYes: () => { addToCart(item, code); } });
       setBarcodeInput(''); return;
     }
     addToCart(item, code); setBarcodeInput('');
@@ -112,17 +112,17 @@ export default function App() {
 
       if (data.success) {
         setLastInvoice(data.sale); 
-        setTimeout(() => {
-          if (ipcRenderer && printerName) {
-            setIsPrinting(true);
-            ipcRenderer.send('print-receipt', printerName);
-            setTimeout(() => { setIsPrinting(false); if (barcodeRef.current) barcodeRef.current.focus(); }, 4000); 
-          } else {
-            window.print();
-            if (barcodeRef.current) barcodeRef.current.focus();
-          }
-          setCart([]); setCustomer({ name: '', mobile: '' }); setPaymentMode('CASH'); fetchInventory();
-        }, 500);
+        
+        // FIRING RAW ESC/POS COMMAND
+        if (ipcRenderer && printerPath) {
+          setIsPrinting(true);
+          ipcRenderer.send('print-receipt', { printerPath, invoice: data.sale, firmSettings });
+          setTimeout(() => { setIsPrinting(false); if (barcodeRef.current) barcodeRef.current.focus(); }, 4000); 
+        } else {
+          setAppAlert({ show: true, msg: "✅ Bill Saved! (Printer path not set, skipping print)" });
+        }
+        
+        setCart([]); setCustomer({ name: '', mobile: '' }); setPaymentMode('CASH'); fetchInventory();
       }
     } catch (e) { setAppAlert({ show: true, msg: "Server Error. Checkout failed." }); }
   };
@@ -137,8 +137,8 @@ export default function App() {
         <div className="bg-white p-8 rounded-lg shadow-2xl w-[450px]">
           <h1 className="text-2xl font-bold border-b pb-3 mb-4 text-blue-900">⚙️ POS Hardware Setup</h1>
           <div className="mb-4"><label className="font-bold text-gray-700">Master Server IP</label><input type="text" value={serverIP} onChange={(e) => setServerIP(e.target.value)} placeholder="192.168.1.50" className="w-full border-2 p-2 rounded font-bold text-lg bg-blue-50 mt-1 outline-none" /></div>
-          <div className="mb-6"><label className="font-bold text-gray-700">4-Inch Receipt Printer Name</label><input type="text" value={printerName} onChange={(e) => setPrinterName(e.target.value)} placeholder="e.g. RTP-4800" className="w-full border-2 p-2 rounded font-bold text-lg mt-1 outline-none" /></div>
-          <button onClick={() => { localStorage.setItem('server_ip', serverIP); localStorage.setItem('receipt_printer', printerName); setIsSettingUp(false); }} className="w-full bg-blue-600 text-white font-bold py-3 rounded hover:bg-blue-700 shadow-md">Connect to Master</button>
+          <div className="mb-6"><label className="font-bold text-gray-700">Shared Printer Network Path</label><input type="text" value={printerPath} onChange={(e) => setPrinterPath(e.target.value)} placeholder="\\localhost\Retsol" className="w-full border-2 p-2 rounded font-bold text-lg mt-1 outline-none" /></div>
+          <button onClick={() => { localStorage.setItem('server_ip', serverIP); localStorage.setItem('receipt_printer', printerPath); setIsSettingUp(false); }} className="w-full bg-blue-600 text-white font-bold py-3 rounded hover:bg-blue-700 shadow-md">Connect to Master</button>
         </div>
       </div>
     );
@@ -194,78 +194,7 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-white p-8 rounded shadow-2xl text-center border-t-4 border-green-500">
             <h2 className="text-3xl font-black text-gray-800 mb-2">Printing 4-Inch Receipt...</h2>
-            <p className="text-gray-600 font-bold">Sending data to {printerName}.</p>
-          </div>
-        </div>
-      )}
-
-      {/* 4-INCH (104mm) WIDE RECEIPT LAYOUT */}
-      {lastInvoice && (
-        <div id="printable-receipt" className="hidden print:block text-[14px] leading-tight font-mono">
-          <div className="text-center mb-4">
-            <h1 className="text-2xl font-black">{firmSettings.shopName || 'Pushpanjali Fashion'}</h1>
-            {firmSettings.address && <div className="text-[13px] mt-1">{firmSettings.address}</div>}
-            {firmSettings.phone && <div className="text-[13px] mt-1">Ph: {firmSettings.phone}</div>}
-            {firmSettings.gstin && <div className="text-[13px] font-bold mt-1">GSTIN: {firmSettings.gstin}</div>}
-          </div>
-          
-          <div className="border-b-[3px] border-dashed border-black mb-3"></div>
-          
-          <div className="flex justify-between text-[13px] mb-1">
-            <span className="font-bold">Bill No: {lastInvoice.invoice}</span>
-            <span>Date: {lastInvoice.date}</span>
-          </div>
-          <div className="flex justify-between text-[13px] mb-3">
-            <span>Cashier: {lastInvoice.cashier}</span>
-            <span>Time: {lastInvoice.time}</span>
-          </div>
-          
-          {lastInvoice.customerName && (
-            <div className="text-[13px] font-bold mb-3 p-2 border border-black">
-              Customer: {lastInvoice.customerName} {lastInvoice.customerMobile && ` | Ph: ${lastInvoice.customerMobile}`}
-            </div>
-          )}
-          
-          <div className="border-b-[3px] border-black mb-2"></div>
-          
-          <table className="w-full text-left mb-2">
-            <thead>
-              <tr className="border-b border-black">
-                <th className="w-1/2 pb-2 text-[14px]">Item / Barcode</th>
-                <th className="w-[15%] text-center pb-2 text-[14px]">Qty</th>
-                <th className="w-[15%] text-right pb-2 text-[14px]">Rate</th>
-                <th className="w-[20%] text-right pb-2 text-[14px]">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {lastInvoice.items.map((i, idx) => (
-                <tr key={idx} className="border-b border-dashed border-gray-400">
-                  <td className="py-2">
-                    <div className="font-bold">{i.name} {i.size ? `(Sz:${i.size})` : ''}</div>
-                    <div className="text-[12px]">{i.barcode}</div>
-                  </td>
-                  <td className="text-center align-middle py-2 font-bold">{i.qty}</td>
-                  <td className="text-right align-middle py-2">{i.price}</td>
-                  <td className="text-right align-middle py-2 font-bold">{i.total}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          
-          <div className="border-b-[3px] border-black mb-3"></div>
-          
-          <div className="flex justify-between font-black text-xl mb-2">
-            <span>NET TOTAL ({totalItems} Qty)</span>
-            <span>Rs. {lastInvoice.amount}</span>
-          </div>
-          
-          <div className="flex justify-between text-[14px] font-bold mb-6">
-            <span>Payment Method:</span>
-            <span className="border border-black px-2">{lastInvoice.method}</span>
-          </div>
-          
-          <div className="text-center font-bold text-[13px] mt-4 border-t border-black pt-4">
-            {firmSettings.billFooterMsg || 'Thank you for shopping! Visit Again.'}
+            <p className="text-gray-600 font-bold">Sending RAW binary code to {printerPath}.</p>
           </div>
         </div>
       )}
@@ -355,7 +284,7 @@ export default function App() {
 
               <button onClick={processCheckout} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-2xl py-6 rounded-xl shadow-xl transition-colors flex flex-col items-center justify-center">
                 <span>GENERATE BILL</span>
-                <span className="text-sm font-bold text-blue-200 mt-1">Print 4-Inch Receipt</span>
+                <span className="text-sm font-bold text-blue-200 mt-1">Print Raw Receipt & Save</span>
               </button>
             </div>
           </div>
