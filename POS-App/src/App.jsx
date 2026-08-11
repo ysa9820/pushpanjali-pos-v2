@@ -3,19 +3,16 @@ import React, { useState, useEffect, useRef } from 'react';
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
 export default function App() {
-  // Connection & Settings
   const [serverIP, setServerIP] = useState(localStorage.getItem('server_ip') || '');
   const [printerPath, setPrinterPath] = useState(localStorage.getItem('receipt_printer') || '\\\\localhost\\Retsol');
   const [isSettingUp, setIsSettingUp] = useState(!localStorage.getItem('server_ip'));
   const [firmSettings, setFirmSettings] = useState({ receiptLayout: [] });
 
-  // Auth & Master Data
   const [users, setUsers] = useState([]);
   const [salesmen, setSalesmen] = useState([]);
   const [pinInput, setPinInput] = useState('');
   const [loggedInUser, setLoggedInUser] = useState(null);
 
-  // POS Operational State
   const [inventory, setInventory] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [sales, setSales] = useState([]);
@@ -24,23 +21,23 @@ export default function App() {
   const [barcodeInput, setBarcodeInput] = useState('');
   const barcodeRef = useRef(null);
 
-  // Customer / Udhaar State
+  // DISCOUNT STATE
+  const [discountInput, setDiscountInput] = useState(0);
+
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [customerSearch, setCustomerSearch] = useState('');
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [newCustomer, setNewCustomer] = useState({ name: '', mobile: '' });
 
-  // Salesman State
   const [activeSalesman, setActiveSalesman] = useState(null);
   const [showSalesmanModal, setShowSalesmanModal] = useState(false);
   const [pendingScannedItem, setPendingScannedItem] = useState(null);
   const [editingCartItemIndex, setEditingCartItemIndex] = useState(null);
 
-  // Payment Mode
   const [paymentMode, setPaymentMode] = useState('CASH');
   const [isPrinting, setIsPrinting] = useState(false);
+  const [lastInvoice, setLastInvoice] = useState(null);
 
-  // Modals
   const [showLedgerModal, setShowLedgerModal] = useState(false);
   const [selectedLedgerCustomer, setSelectedLedgerCustomer] = useState(null);
   const [selectedLedgerInvoice, setSelectedLedgerInvoice] = useState(null);
@@ -55,20 +52,13 @@ export default function App() {
   const closeAlert = () => { setAppAlert({ show: false, msg: '' }); setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100); };
   const closeConfirm = () => { setAppConfirm({ show: false, msg: '', onYes: null }); setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100); };
 
-  // Fetch Master Data
-  useEffect(() => {
-    if (serverIP && !isSettingUp) fetchAllData();
-  }, [serverIP, isSettingUp]);
+  useEffect(() => { if (serverIP && !isSettingUp) fetchAllData(); }, [serverIP, isSettingUp]);
 
   const fetchAllData = () => {
     fetch(`http://${serverIP}:5000/api/users`).then(r => r.json()).then(setUsers).catch(() => {});
     fetch(`http://${serverIP}:5000/api/salesmen`).then(r => r.json()).then(setSalesmen).catch(() => {});
-    fetch(`http://${serverIP}:5000/api/settings`).then(r => r.json()).then(data => {
-      if (!data.receiptLayout) data.receiptLayout = ["HEADER_SHOPNAME", "ITEM_TABLE", "TOTAL_AMOUNT"];
-      setFirmSettings(data);
-    }).catch(() => {});
-    fetchInventory();
-    fetchCustomers();
+    fetch(`http://${serverIP}:5000/api/settings`).then(r => r.json()).then(data => setFirmSettings(data)).catch(() => {});
+    fetchInventory(); fetchCustomers();
     fetch(`http://${serverIP}:5000/api/sales`).then(r => r.json()).then(setSales).catch(() => {});
     fetch(`http://${serverIP}:5000/api/payments`).then(r => r.json()).then(setPayments).catch(() => {});
   };
@@ -86,46 +76,32 @@ export default function App() {
     return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
   }, [printerPath]);
 
-  // Login
   const handleLogin = () => {
     const u = users.find(x => x.pin === pinInput);
     if (u) { setLoggedInUser(u); setPinInput(''); }
     else { setAppAlert({ show: true, msg: "Invalid PIN" }); setPinInput(''); }
   };
 
-  const handleLogout = () => {
-    setLoggedInUser(null); setCart([]); setSelectedCustomer(null); setActiveSalesman(null);
-  };
+  const handleLogout = () => { setLoggedInUser(null); setCart([]); setSelectedCustomer(null); setActiveSalesman(null); setDiscountInput(0); };
 
-  // BARCODE & SALESMAN PROMPT LOGIC
   const handleBarcodeSubmit = (e) => {
     e.preventDefault();
     const code = barcodeInput.trim().toLowerCase();
     if (!code) return;
 
     const item = inventory.find(i => i.barcode.toLowerCase() === code);
-    if (!item) {
-      setAppAlert({ show: true, msg: `Barcode [${barcodeInput}] not found in master!` });
-      setBarcodeInput(''); return;
-    }
+    if (!item) { setAppAlert({ show: true, msg: `Barcode [${barcodeInput}] not found!` }); setBarcodeInput(''); return; }
 
     if (item.qty <= 0) {
-      setAppConfirm({
-        show: true,
-        msg: `Item "${item.name}" is OUT OF STOCK. Sell anyway?`,
-        onYes: () => proceedAddItemWithSalesman(item, code)
-      });
+      setAppConfirm({ show: true, msg: `Item "${item.name}" is OUT OF STOCK. Sell anyway?`, onYes: () => proceedAddItemWithSalesman(item, code) });
       setBarcodeInput(''); return;
     }
-
-    proceedAddItemWithSalesman(item, code);
-    setBarcodeInput('');
+    proceedAddItemWithSalesman(item, code); setBarcodeInput('');
   };
 
   const proceedAddItemWithSalesman = (item, code) => {
     if (!activeSalesman && salesmen.length > 0) {
-      setPendingScannedItem({ item, code });
-      setShowSalesmanModal(true);
+      setPendingScannedItem({ item, code }); setShowSalesmanModal(true);
     } else {
       addItemToCart(item, code, activeSalesman ? activeSalesman.name : 'Default');
     }
@@ -141,8 +117,7 @@ export default function App() {
   };
 
   const assignSalesmanFromModal = (sm) => {
-    setActiveSalesman(sm);
-    setShowSalesmanModal(false);
+    setActiveSalesman(sm); setShowSalesmanModal(false);
     if (editingCartItemIndex !== null) {
       const copy = [...cart]; copy[editingCartItemIndex].salesmanName = sm.name; setCart(copy);
       setEditingCartItemIndex(null);
@@ -161,10 +136,15 @@ export default function App() {
     const copy = [...cart]; copy[index].price = newPrice; setCart(copy);
   };
 
-  const totalAmount = cart.reduce((s, i) => s + (parseFloat(i.price) * i.cartQty), 0);
+  // CALCULATIONS
+  const subTotalAmount = cart.reduce((s, i) => s + (parseFloat(i.price) * i.cartQty), 0);
+  const discountAmount = parseFloat(discountInput) || 0;
+  const taxableAmount = Math.max(0, subTotalAmount - discountAmount);
+  const gstRate = firmSettings.defaultGstRate || 5;
+  const taxAmount = Number(((taxableAmount * gstRate) / 100).toFixed(2));
+  const netTotalAmount = taxableAmount + taxAmount;
   const totalItems = cart.reduce((s, i) => s + i.cartQty, 0);
 
-  // CHECKOUT
   const processCheckout = async () => {
     if (cart.length === 0) return setAppAlert({ show: true, msg: "Cart is empty!" });
     if (paymentMode === 'CREDIT' && !selectedCustomer) {
@@ -174,31 +154,36 @@ export default function App() {
     try {
       const payload = {
         cart: cart.map(c => ({ barcode: c.barcode, name: c.name, size: c.size, qty: c.cartQty, price: c.price, total: c.cartQty * c.price, salesmanName: c.salesmanName })),
-        totalAmount, paymentMethod: paymentMode, cashierName: loggedInUser.name,
-        customerName: selectedCustomer ? selectedCustomer.name : '',
-        customerMobile: selectedCustomer ? selectedCustomer.mobile : '',
+        subTotal: subTotalAmount, discount: discountAmount, taxAmount, totalAmount: netTotalAmount,
+        paymentMethod: paymentMode, cashierName: loggedInUser.name,
+        customerName: selectedCustomer ? selectedCustomer.name : '', customerMobile: selectedCustomer ? selectedCustomer.mobile : '',
         terminalId: 'T1'
       };
 
-      const res = await fetch(`http://${serverIP}:5000/api/checkout`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-      });
+      const res = await fetch(`http://${serverIP}:5000/api/checkout`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const data = await res.json();
 
       if (data.success) {
+        setLastInvoice(data.sale);
         if (ipcRenderer && printerPath) {
           setIsPrinting(true);
           ipcRenderer.send('print-receipt', { printerPath, invoice: data.sale, firmSettings });
           setTimeout(() => { setIsPrinting(false); if (barcodeRef.current) barcodeRef.current.focus(); }, 4000);
-        } else {
-          setAppAlert({ show: true, msg: "✅ Bill Saved!" });
-        }
-        setCart([]); setSelectedCustomer(null); setActiveSalesman(null); setPaymentMode('CASH'); fetchAllData();
+        } else { setAppAlert({ show: true, msg: "✅ Bill Saved!" }); }
+        setCart([]); setSelectedCustomer(null); setActiveSalesman(null); setDiscountInput(0); setPaymentMode('CASH'); fetchAllData();
       }
     } catch (e) { setAppAlert({ show: true, msg: "Checkout Failed. Server error." }); }
   };
 
-  // KHATA PAYMENT SUBMIT
+  const handleReprintLastBill = () => {
+    if (!lastInvoice) return setAppAlert({ show: true, msg: "No recent bill to reprint." });
+    if (ipcRenderer && printerPath) {
+      setIsPrinting(true);
+      ipcRenderer.send('print-receipt', { printerPath, invoice: lastInvoice, firmSettings });
+      setTimeout(() => setIsPrinting(false), 4000);
+    }
+  };
+
   const handleKhataPaySubmit = async () => {
     const amt = parseFloat(khataPayAmount);
     if (!selectedCustomer) return setAppAlert({ show: true, msg: "No customer selected!" });
@@ -210,22 +195,18 @@ export default function App() {
         body: JSON.stringify({ customerMobile: selectedCustomer.mobile, amountPaid: amt, method: khataPayMode, cashierName: loggedInUser.name })
       });
       const data = await res.json();
-
       if (data.success) {
         setShowKhataPayModal(false); setKhataPayAmount('');
         if (ipcRenderer && printerPath) {
           setIsPrinting(true);
           ipcRenderer.send('print-payment-receipt', { printerPath, payment: data.payment, firmSettings, newBalance: data.newBalance });
-          setTimeout(() => { setIsPrinting(false); }, 4000);
-        } else {
-          setAppAlert({ show: true, msg: `✅ Payment of Rs.${amt} Received!` });
-        }
+          setTimeout(() => setIsPrinting(false), 4000);
+        } else { setAppAlert({ show: true, msg: `✅ Payment of Rs.${amt} Received!` }); }
         fetchAllData();
       }
     } catch (e) { setAppAlert({ show: true, msg: "Error submitting payment." }); }
   };
 
-  // EOD REPORT PRINT
   const handlePrintEOD = () => {
     const today = new Date().toLocaleDateString();
     const todaysSales = sales.filter(s => s.date === today && s.cashier === loggedInUser.name);
@@ -234,21 +215,15 @@ export default function App() {
     const cashSales = todaysSales.filter(s => s.method === 'CASH').reduce((sum, s) => sum + parseFloat(s.amount), 0);
     const upiSales = todaysSales.filter(s => s.method === 'UPI').reduce((sum, s) => sum + parseFloat(s.amount), 0);
     const creditSales = todaysSales.filter(s => s.method === 'CREDIT').reduce((sum, s) => sum + parseFloat(s.amount), 0);
-
     const khataCash = todaysPayments.filter(p => p.method === 'CASH').reduce((sum, p) => sum + parseFloat(p.amount), 0);
     const khataUpi = todaysPayments.filter(p => p.method === 'UPI').reduce((sum, p) => sum + parseFloat(p.amount), 0);
 
-    const summary = {
-      cashSales, upiSales, creditSales, totalSales: cashSales + upiSales + creditSales,
-      khataCash, khataUpi, netCashInDrawer: cashSales + khataCash
-    };
+    const summary = { cashSales, upiSales, creditSales, totalSales: cashSales + upiSales + creditSales, khataCash, khataUpi, netCashInDrawer: cashSales + khataCash };
 
     if (ipcRenderer && printerPath) {
       setIsPrinting(true);
       ipcRenderer.send('print-eod-report', { printerPath, summary, firmSettings, cashierName: loggedInUser.name });
       setTimeout(() => setIsPrinting(false), 4000);
-    } else {
-      setAppAlert({ show: true, msg: `📊 Z-Report Summary:\nCash Sales: Rs.${cashSales}\nKhata Cash Recd: Rs.${khataCash}\nNet Cash in Drawer: Rs.${cashSales + khataCash}` });
     }
   };
 
@@ -276,9 +251,7 @@ export default function App() {
   if (!loggedInUser) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-gray-900 font-sans">
-        {appAlert.show && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4"><div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600"><p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p><button onClick={closeAlert} className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700">OK</button></div></div>
-        )}
+        {appAlert.show && ( <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4"><div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600"><p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p><button onClick={closeAlert} className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700">OK</button></div></div> )}
         <div className="bg-white p-8 rounded-lg shadow-2xl w-[400px] text-center border-t-8 border-blue-600">
           <h1 className="text-3xl font-black text-gray-800 mb-2">POS Terminal</h1>
           <p className="text-gray-500 font-bold mb-6">Enter PIN to Unlock Till</p>
@@ -298,10 +271,7 @@ export default function App() {
 
       {isPrinting && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-white p-8 rounded shadow-2xl text-center border-t-4 border-green-500">
-            <h2 className="text-3xl font-black text-gray-800 mb-2">Printing Thermal Slip...</h2>
-            <p className="text-gray-600 font-bold">Sending ESC/POS payload to {printerPath}.</p>
-          </div>
+          <div className="bg-white p-8 rounded shadow-2xl text-center border-t-4 border-green-500"><h2 className="text-3xl font-black text-gray-800 mb-2">Printing Thermal Slip...</h2><p className="text-gray-600 font-bold">Sending ESC/POS payload to {printerPath}.</p></div>
         </div>
       )}
 
@@ -313,11 +283,9 @@ export default function App() {
             <div className="flex flex-col gap-2 max-h-[300px] overflow-y-auto mb-4">
               {salesmen.map(sm => (
                 <button key={sm.id} onClick={() => assignSalesmanFromModal(sm)} className="p-3 text-left border-2 rounded-lg font-bold hover:bg-blue-50 hover:border-blue-500 flex justify-between items-center">
-                  <span>{sm.name}</span>
-                  <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded">{sm.commissionRate}% Comm</span>
+                  <span>{sm.name}</span><span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded">{sm.commissionRate}% Comm</span>
                 </button>
               ))}
-              {salesmen.length === 0 && <div className="p-4 text-center text-gray-400 font-bold">No salesmen created in Admin panel.</div>}
             </div>
             <button onClick={() => { setShowSalesmanModal(false); setPendingScannedItem(null); setEditingCartItemIndex(null); }} className="w-full bg-gray-300 text-gray-700 font-bold py-2 rounded hover:bg-gray-400">Cancel</button>
           </div>
@@ -329,101 +297,45 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl p-6 w-[450px]">
             <h2 className="text-xl font-black text-gray-800 border-b pb-3 mb-4">💵 Receive Khata Payment</h2>
-            <div className="bg-yellow-50 p-3 rounded border border-yellow-200 mb-4">
-              <div className="font-bold text-gray-800 text-lg">{selectedCustomer.name}</div>
-              <div className="text-sm text-gray-600 font-bold">Current Balance: <span className="text-red-600 font-black text-xl">Rs. {selectedCustomer.balance}</span></div>
-            </div>
-            <div className="mb-4">
-              <label className="font-bold text-gray-700 text-sm block mb-1">Amount Received (Rs.)</label>
-              <input type="number" value={khataPayAmount} onChange={e => setKhataPayAmount(e.target.value)} placeholder="0.00" className="w-full border-2 border-gray-300 p-3 rounded font-black text-2xl outline-none focus:border-blue-500" autoFocus />
-            </div>
-            <div className="mb-6">
-              <label className="font-bold text-gray-700 text-sm block mb-1">Payment Mode</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => setKhataPayMode('CASH')} className={`py-3 font-bold rounded ${khataPayMode === 'CASH' ? 'bg-green-600 text-white' : 'bg-gray-100 border'}`}>💵 CASH</button>
-                <button onClick={() => setKhataPayMode('UPI')} className={`py-3 font-bold rounded ${khataPayMode === 'UPI' ? 'bg-purple-600 text-white' : 'bg-gray-100 border'}`}>📱 UPI</button>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => setShowKhataPayModal(false)} className="w-1/3 bg-gray-300 text-gray-700 font-bold py-3 rounded">Cancel</button>
-              <button onClick={handleKhataPaySubmit} className="w-2/3 bg-green-600 text-white font-black py-3 rounded hover:bg-green-700 shadow-md">Print Payment Slip</button>
-            </div>
+            <div className="bg-yellow-50 p-3 rounded border border-yellow-200 mb-4"><div className="font-bold text-gray-800 text-lg">{selectedCustomer.name}</div><div className="text-sm text-gray-600 font-bold">Current Balance: <span className="text-red-600 font-black text-xl">Rs. {selectedCustomer.balance}</span></div></div>
+            <div className="mb-4"><label className="font-bold text-gray-700 text-sm block mb-1">Amount Received (Rs.)</label><input type="number" value={khataPayAmount} onChange={e => setKhataPayAmount(e.target.value)} placeholder="0.00" className="w-full border-2 border-gray-300 p-3 rounded font-black text-2xl outline-none focus:border-blue-500" autoFocus /></div>
+            <div className="mb-6"><label className="font-bold text-gray-700 text-sm block mb-1">Payment Mode</label><div className="grid grid-cols-2 gap-2"><button onClick={() => setKhataPayMode('CASH')} className={`py-3 font-bold rounded ${khataPayMode === 'CASH' ? 'bg-green-600 text-white' : 'bg-gray-100 border'}`}>💵 CASH</button><button onClick={() => setKhataPayMode('UPI')} className={`py-3 font-bold rounded ${khataPayMode === 'UPI' ? 'bg-purple-600 text-white' : 'bg-gray-100 border'}`}>📱 UPI</button></div></div>
+            <div className="flex gap-2"><button onClick={() => setShowKhataPayModal(false)} className="w-1/3 bg-gray-300 text-gray-700 font-bold py-3 rounded">Cancel</button><button onClick={handleKhataPaySubmit} className="w-2/3 bg-green-600 text-white font-black py-3 rounded hover:bg-green-700 shadow-md">Print Payment Slip</button></div>
           </div>
         </div>
       )}
 
-      {/* SPLIT-SCREEN CUSTOMER LEDGER PASSBOOK (READ-ONLY) */}
+      {/* CUSTOMER LEDGER PASSBOOK MODAL */}
       {showLedgerModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
-            <div className="bg-gray-900 text-white p-4 flex justify-between items-center">
-              <h2 className="text-xl font-black">📒 Customer Khata Passbook (Read-Only)</h2>
-              <button onClick={() => setShowLedgerModal(false)} className="bg-red-600 px-4 py-1.5 rounded font-bold hover:bg-red-700">Close Passbook</button>
-            </div>
+            <div className="bg-gray-900 text-white p-4 flex justify-between items-center"><h2 className="text-xl font-black">📒 Customer Khata Passbook</h2><button onClick={() => setShowLedgerModal(false)} className="bg-red-600 px-4 py-1.5 rounded font-bold hover:bg-red-700">Close</button></div>
             <div className="flex flex-1 overflow-hidden">
-              {/* LEFT: Customer List & Transaction History */}
               <div className="w-1/2 border-r flex flex-col p-4 bg-gray-50">
-                <input type="text" value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} placeholder="Search customer name or mobile..." className="w-full border-2 p-2 rounded font-bold mb-4 outline-none focus:border-blue-500" />
+                <input type="text" value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} placeholder="Search name or mobile..." className="w-full border-2 p-2 rounded font-bold mb-4 outline-none focus:border-blue-500" />
                 <div className="flex-1 overflow-y-auto space-y-2">
                   {filteredCustomers.map(c => (
-                    <div key={c.id} onClick={() => { setSelectedLedgerCustomer(c); setSelectedLedgerInvoice(null); }} className={`p-3 rounded border-2 cursor-pointer transition-all ${selectedLedgerCustomer?.id === c.id ? 'bg-blue-50 border-blue-600 shadow-sm' : 'bg-white hover:border-gray-300'}`}>
-                      <div className="flex justify-between items-center">
-                        <span className="font-bold text-gray-800 text-base">{c.name}</span>
-                        <span className="text-red-600 font-black">Rs. {c.balance}</span>
-                      </div>
+                    <div key={c.id} onClick={() => { setSelectedLedgerCustomer(c); setSelectedLedgerInvoice(null); }} className={`p-3 rounded border-2 cursor-pointer transition-all ${selectedLedgerCustomer?.id === c.id ? 'bg-blue-50 border-blue-600 shadow-sm' : 'bg-white'}`}>
+                      <div className="flex justify-between items-center"><span className="font-bold text-gray-800 text-base">{c.name}</span><span className="text-red-600 font-black">Rs. {c.balance}</span></div>
                       <div className="text-xs text-gray-500 font-mono">{c.mobile}</div>
                     </div>
                   ))}
                 </div>
               </div>
-
-              {/* RIGHT: Bill Inspector */}
               <div className="w-1/2 flex flex-col p-4 bg-white overflow-y-auto">
                 {selectedLedgerCustomer ? (
                   <div>
                     <h3 className="font-black text-gray-800 text-lg border-b pb-2 mb-4">{selectedLedgerCustomer.name}'s History</h3>
                     <div className="space-y-2 mb-6">
                       {selectedLedgerCustomer.history.slice().reverse().map((h, i) => (
-                        <div key={i} onClick={() => {
-                          if (h.invoice) {
-                            const found = sales.find(s => s.invoice === h.invoice);
-                            setSelectedLedgerInvoice(found);
-                          }
-                        }} className={`p-3 border rounded text-sm flex justify-between items-center ${h.invoice ? 'cursor-pointer hover:bg-yellow-50 border-blue-200' : 'bg-green-50 border-green-200'}`}>
-                          <div>
-                            <div className="font-bold">{h.type === 'CREDIT_SALE' ? `Bill ${h.invoice}` : 'Payment Received'}</div>
-                            <div className="text-xs text-gray-500">{h.date} {h.time}</div>
-                          </div>
-                          <div className={`font-black text-base ${h.type === 'CREDIT_SALE' ? 'text-red-600' : 'text-green-600'}`}>
-                            {h.type === 'CREDIT_SALE' ? `+ Rs.${h.amount}` : `- Rs.${h.amount}`}
-                          </div>
+                        <div key={i} onClick={() => { if (h.invoice) setSelectedLedgerInvoice(sales.find(s => s.invoice === h.invoice)); }} className={`p-3 border rounded text-sm flex justify-between items-center ${h.invoice ? 'cursor-pointer hover:bg-yellow-50 border-blue-200' : 'bg-green-50 border-green-200'}`}>
+                          <div><div className="font-bold">{h.type.includes('SALE') ? `Bill ${h.invoice}` : 'Payment Received'}</div><div className="text-xs text-gray-500">{h.date} {h.time}</div></div>
+                          <div className={`font-black text-base ${h.type.includes('SALE') ? 'text-red-600' : 'text-green-600'}`}>{h.type.includes('SALE') ? `+ Rs.${h.amount}` : `- Rs.${h.amount}`}</div>
                         </div>
                       ))}
                     </div>
-
-                    {selectedLedgerInvoice && (
-                      <div className="border-t-4 border-blue-600 pt-4 bg-gray-50 p-4 rounded">
-                        <h4 className="font-black text-gray-800 mb-2">Inspecting Bill: {selectedLedgerInvoice.invoice}</h4>
-                        <table className="w-full text-left text-xs mb-2">
-                          <thead className="border-b font-bold"><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Salesman</th><th className="text-right">Total</th></tr></thead>
-                          <tbody>
-                            {selectedLedgerInvoice.items.map((item, idx) => (
-                              <tr key={idx} className="border-b">
-                                <td className="py-1 font-bold">{item.name}</td>
-                                <td>{item.qty}</td>
-                                <td>{item.price}</td>
-                                <td className="text-blue-600 font-bold">{item.salesmanName || '-'}</td>
-                                <td className="text-right font-bold">Rs.{item.total}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
                   </div>
-                ) : (
-                  <div className="flex-1 flex items-center justify-center text-gray-400 font-bold">Select a customer from the left to view passbook.</div>
-                )}
+                ) : (<div className="flex-1 flex items-center justify-center text-gray-400 font-bold">Select a customer from the left to view passbook.</div>)}
               </div>
             </div>
           </div>
@@ -434,8 +346,9 @@ export default function App() {
       <div className="bg-gray-900 text-white p-3 flex justify-between items-center shadow-md z-10">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-black tracking-wide">POS Terminal <span className="bg-green-500 text-xs px-2 py-0.5 rounded text-white ml-2">ONLINE</span></h1>
-          <button onClick={() => setShowLedgerModal(true)} className="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm font-bold border border-gray-700">📒 Customer Passbooks</button>
+          {loggedInUser.permissions?.canViewOldBills && <button onClick={() => setShowLedgerModal(true)} className="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm font-bold border border-gray-700">📒 Passbooks</button>}
           <button onClick={handlePrintEOD} className="bg-purple-600 hover:bg-purple-700 px-3 py-1 rounded text-sm font-bold text-white shadow">📊 Print Z-Report</button>
+          {lastInvoice && <button onClick={handleReprintLastBill} className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm font-bold text-white shadow">🖨️ Reprint Last Bill</button>}
         </div>
         <div className="flex items-center gap-6">
           <div className="font-bold text-gray-300">Cashier: <span className="text-white text-lg">{loggedInUser.name}</span></div>
@@ -444,49 +357,28 @@ export default function App() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        
         {/* LEFT: CART AREA */}
         <div className="flex-1 bg-white flex flex-col border-r shadow-lg z-10">
           <div className="bg-gray-100 p-3 border-b flex justify-between items-center font-black text-gray-700">
             <span>🛒 Current Bill ({totalItems} Items)</span>
             <div className="flex items-center gap-4">
-              {activeSalesman && (
-                <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Default Salesman: <strong>{activeSalesman.name}</strong></span>
-              )}
-              <button onClick={() => setAppConfirm({ show: true, msg: "Clear entire cart?", onYes: () => setCart([]) })} className="text-red-500 hover:text-red-700 text-xs underline">Clear Cart</button>
+              {activeSalesman && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Default Salesman: <strong>{activeSalesman.name}</strong></span>}
+              {loggedInUser.permissions?.canEditCart && <button onClick={() => setAppConfirm({ show: true, msg: "Clear entire cart?", onYes: () => setCart([]) })} className="text-red-500 hover:text-red-700 text-xs underline">Clear Cart</button>}
             </div>
           </div>
           
           <div className="flex-1 overflow-y-auto">
-            <table className="w-full text-left text-sm border-collapse">
-              <thead className="bg-gray-50 sticky top-0 font-bold border-b-2 border-gray-300 shadow-sm">
-                <tr><th className="p-3 w-10 text-center">#</th><th className="p-3">Item Details</th><th className="p-3 w-28 text-center">Salesman</th><th className="p-3 w-24 text-center">Qty</th><th className="p-3 w-28 text-right">Price</th><th className="p-3 w-28 text-right">Total</th><th className="p-3 w-12 text-center">Del</th></tr>
-              </thead>
+            <table className="w-full text-left text-sm border-collapse"><thead className="bg-gray-50 sticky top-0 font-bold border-b-2 border-gray-300 shadow-sm"><tr><th className="p-3 w-10 text-center">#</th><th className="p-3">Item Details</th><th className="p-3 w-28 text-center">Salesman</th><th className="p-3 w-24 text-center">Qty</th><th className="p-3 w-28 text-right">Price</th><th className="p-3 w-28 text-right">Total</th><th className="p-3 w-12 text-center">Del</th></tr></thead>
               <tbody>
                 {cart.map((c, i) => (
                   <tr key={i} className="border-b hover:bg-yellow-50">
                     <td className="p-3 text-center font-bold text-gray-400">{i + 1}</td>
-                    <td className="p-3">
-                      <div className="font-bold text-gray-800 text-base">{c.name}</div>
-                      <div className="text-xs text-gray-500 font-mono mt-0.5">{c.barcode} {c.brand ? ` | ${c.brand}` : ''} {c.size ? ` | Sz: ${c.size}` : ''}</div>
-                    </td>
-                    <td className="p-2 text-center">
-                      <button onClick={() => { setEditingCartItemIndex(i); setShowSalesmanModal(true); }} className="text-xs bg-blue-50 text-blue-700 font-bold px-2 py-1 rounded border border-blue-200 hover:bg-blue-100">
-                        {c.salesmanName || 'Assign'}
-                      </button>
-                    </td>
-                    <td className="p-2 border-l border-r bg-gray-50">
-                      <div className="flex items-center justify-center">
-                        <button onClick={() => updateCartQty(i, c.cartQty - 1)} className="bg-gray-200 px-3 py-1 font-black rounded-l hover:bg-gray-300">-</button>
-                        <input type="number" value={c.cartQty} onChange={e => updateCartQty(i, parseInt(e.target.value) || 0)} className="w-12 text-center font-black text-lg bg-white outline-none border-y py-0.5" />
-                        <button onClick={() => updateCartQty(i, c.cartQty + 1)} className="bg-gray-200 px-3 py-1 font-black rounded-r hover:bg-gray-300">+</button>
-                      </div>
-                    </td>
-                    <td className="p-3 text-right">
-                      <input type="number" value={c.price} onChange={e => updateCartPrice(i, parseFloat(e.target.value) || 0)} className={`w-20 text-right font-bold text-lg outline-none focus:border-b-2 focus:border-blue-500 bg-transparent ${c.price < c.originalPrice ? 'text-red-600' : 'text-gray-800'}`} title={`Original MRP: ₹${c.originalPrice}`} />
-                    </td>
+                    <td className="p-3"><div className="font-bold text-gray-800 text-base">{c.name}</div><div className="text-xs text-gray-500 font-mono mt-0.5">{c.barcode} {c.brand ? ` | ${c.brand}` : ''} {c.size ? ` | Sz: ${c.size}` : ''}</div></td>
+                    <td className="p-2 text-center"><button onClick={() => { setEditingCartItemIndex(i); setShowSalesmanModal(true); }} className="text-xs bg-blue-50 text-blue-700 font-bold px-2 py-1 rounded border border-blue-200">{c.salesmanName || 'Assign'}</button></td>
+                    <td className="p-2 border-l border-r bg-gray-50"><div className="flex items-center justify-center"><button onClick={() => updateCartQty(i, c.cartQty - 1)} className="bg-gray-200 px-3 py-1 font-black rounded-l">-</button><input type="number" value={c.cartQty} onChange={e => updateCartQty(i, parseInt(e.target.value) || 0)} className="w-12 text-center font-black text-lg bg-white outline-none border-y py-0.5" /><button onClick={() => updateCartQty(i, c.cartQty + 1)} className="bg-gray-200 px-3 py-1 font-black rounded-r">+</button></div></td>
+                    <td className="p-3 text-right"><input type="number" value={c.price} onChange={e => updateCartPrice(i, parseFloat(e.target.value) || 0)} className={`w-20 text-right font-bold text-lg outline-none bg-transparent ${c.price < c.originalPrice ? 'text-red-600' : 'text-gray-800'}`} title={`MRP: ₹${c.originalPrice}`} /></td>
                     <td className="p-3 text-right font-black text-lg text-green-700">₹{(c.cartQty * c.price).toLocaleString('en-IN')}</td>
-                    <td className="p-3 text-center"><button onClick={() => setCart(cart.filter((_, idx) => idx !== i))} className="text-red-500 font-bold hover:bg-red-100 rounded-full w-8 h-8 flex items-center justify-center mx-auto">X</button></td>
+                    <td className="p-3 text-center">{loggedInUser.permissions?.canEditCart && <button onClick={() => setCart(cart.filter((_, idx) => idx !== i))} className="text-red-500 font-bold hover:bg-red-100 rounded-full w-8 h-8 flex items-center justify-center mx-auto">X</button>}</td>
                   </tr>
                 ))}
                 {cart.length === 0 && <tr><td colSpan="7" className="p-20 text-center text-gray-400 font-bold text-2xl">Ready for next customer.<br/><span className="text-sm mt-2 block font-normal">Scan a barcode to begin.</span></td></tr>}
@@ -494,35 +386,34 @@ export default function App() {
             </table>
           </div>
 
-          <div className="bg-gray-50 border-t-4 border-gray-300 p-6 flex justify-between items-center shadow-inner">
-            <div className="text-gray-500 font-bold text-xl uppercase tracking-wider">Net Amount</div>
-            <div className="text-6xl font-black text-blue-900">₹ {totalAmount.toLocaleString('en-IN')}</div>
+          <div className="bg-gray-50 border-t-4 border-gray-300 p-4 flex flex-col gap-2">
+            <div className="flex justify-between items-center text-sm font-bold text-gray-600">
+              <span>Subtotal: ₹{subTotalAmount}</span>
+              {loggedInUser.permissions?.canDiscount && (
+                <div className="flex items-center gap-2">
+                  <span>Discount (Rs):</span>
+                  <input type="number" value={discountInput} onChange={e=>setDiscountInput(e.target.value)} className="w-24 border p-1 rounded font-bold text-right text-red-600 outline-none" />
+                </div>
+              )}
+              <span>GST ({firmSettings.defaultGstRate || 5}%): ₹{taxAmount}</span>
+            </div>
+            <div className="flex justify-between items-center border-t pt-2">
+              <div className="text-gray-500 font-bold text-xl uppercase tracking-wider">Net Payable</div>
+              <div className="text-5xl font-black text-blue-900">₹ {netTotalAmount.toLocaleString('en-IN')}</div>
+            </div>
           </div>
         </div>
 
         {/* RIGHT: CHECKOUT & CUSTOMER SEARCH */}
         <div className="w-[420px] bg-gray-100 flex flex-col">
-          
-          <div className="p-6 bg-blue-600 text-white shadow-md">
-            <label className="font-bold text-blue-200 text-sm block mb-1 uppercase tracking-wide">Scan Barcode / Search Code</label>
-            <form onSubmit={handleBarcodeSubmit}>
-              <input ref={barcodeRef} type="text" value={barcodeInput} onChange={e => setBarcodeInput(e.target.value)} placeholder="Waiting for scanner..." className="w-full border-4 border-blue-400 bg-white text-black p-4 rounded-xl font-black text-2xl outline-none focus:border-yellow-400 shadow-inner" autoFocus />
-            </form>
-          </div>
-
+          <div className="p-6 bg-blue-600 text-white shadow-md"><label className="font-bold text-blue-200 text-sm block mb-1 uppercase">Scan Barcode / Search Code</label><form onSubmit={handleBarcodeSubmit}><input ref={barcodeRef} type="text" value={barcodeInput} onChange={e => setBarcodeInput(e.target.value)} placeholder="Waiting for scanner..." className="w-full border-4 border-blue-400 bg-white text-black p-4 rounded-xl font-black text-2xl outline-none focus:border-yellow-400 shadow-inner" autoFocus /></form></div>
           <div className="p-6 flex-1 flex flex-col gap-4 overflow-y-auto">
-            <div className="flex justify-between items-center border-b pb-2">
-              <h3 className="font-black text-gray-800 text-lg">Customer / Khata Account</h3>
-              {selectedCustomer && (
-                <button onClick={() => setShowKhataPayModal(true)} className="bg-green-600 text-white text-xs font-bold px-3 py-1 rounded shadow hover:bg-green-700">💵 Receive Pay</button>
-              )}
-            </div>
+            <div className="flex justify-between items-center border-b pb-2"><h3 className="font-black text-gray-800 text-lg">Customer / Khata Account</h3>{selectedCustomer && <button onClick={() => setShowKhataPayModal(true)} className="bg-green-600 text-white text-xs font-bold px-3 py-1 rounded shadow">💵 Receive Pay</button>}</div>
 
             {selectedCustomer ? (
               <div className="bg-white border-2 border-blue-500 p-4 rounded-xl relative shadow-sm">
                 <button onClick={() => setSelectedCustomer(null)} className="absolute top-2 right-2 text-red-500 font-bold hover:bg-red-50 rounded-full w-6 h-6">X</button>
-                <div className="font-black text-gray-800 text-lg">{selectedCustomer.name}</div>
-                <div className="text-xs text-gray-500 font-mono">{selectedCustomer.mobile}</div>
+                <div className="font-black text-gray-800 text-lg">{selectedCustomer.name}</div><div className="text-xs text-gray-500 font-mono">{selectedCustomer.mobile}</div>
                 <div className="mt-2 text-sm font-bold text-gray-600">Pending Udhaar: <span className="text-red-600 font-black text-lg">Rs. {selectedCustomer.balance}</span></div>
               </div>
             ) : (
@@ -532,10 +423,7 @@ export default function App() {
                   <div className="absolute top-full left-0 right-0 bg-white border-2 border-blue-500 rounded-b-xl shadow-2xl z-30 max-h-[200px] overflow-y-auto">
                     {filteredCustomers.map(c => (
                       <div key={c.id} onClick={() => { setSelectedCustomer(c); setCustomerSearch(''); }} className="p-3 border-b hover:bg-blue-50 cursor-pointer flex justify-between items-center">
-                        <div>
-                          <div className="font-bold text-gray-800">{c.name}</div>
-                          <div className="text-xs text-gray-500 font-mono">{c.mobile}</div>
-                        </div>
+                        <div><div className="font-bold text-gray-800">{c.name}</div><div className="text-xs text-gray-500 font-mono">{c.mobile}</div></div>
                         <div className="text-red-600 font-black text-xs">Bal: Rs.{c.balance}</div>
                       </div>
                     ))}
@@ -545,7 +433,6 @@ export default function App() {
               </div>
             )}
 
-            {/* ADD CUSTOMER INLINE FORM */}
             {showAddCustomer && !selectedCustomer && (
               <div className="bg-blue-50 border-2 border-blue-300 p-4 rounded-xl flex flex-col gap-2">
                 <h4 className="font-bold text-blue-900 text-sm">Create New Khata Account</h4>
@@ -565,9 +452,9 @@ export default function App() {
             <div className="mt-auto">
               <h3 className="font-black text-gray-800 text-lg border-b pb-2 mb-3">Payment Method</h3>
               <div className="grid grid-cols-3 gap-2 mb-4">
-                <button onClick={() => setPaymentMode('CASH')} className={`py-4 font-black rounded-lg transition-transform ${paymentMode === 'CASH' ? 'bg-green-600 text-white shadow-inner scale-95' : 'bg-white border-2 border-gray-300 text-gray-600 hover:bg-gray-50'}`}>💵 CASH</button>
-                <button onClick={() => setPaymentMode('UPI')} className={`py-4 font-black rounded-lg transition-transform ${paymentMode === 'UPI' ? 'bg-purple-600 text-white shadow-inner scale-95' : 'bg-white border-2 border-gray-300 text-gray-600 hover:bg-gray-50'}`}>📱 UPI</button>
-                <button onClick={() => setPaymentMode('CREDIT')} className={`py-4 font-black rounded-lg transition-transform ${paymentMode === 'CREDIT' ? 'bg-orange-600 text-white shadow-inner scale-95' : 'bg-white border-2 border-gray-300 text-gray-600 hover:bg-gray-50'}`}>📒 UDHAAR</button>
+                <button onClick={() => setPaymentMode('CASH')} className={`py-4 font-black rounded-lg ${paymentMode === 'CASH' ? 'bg-green-600 text-white shadow-inner scale-95' : 'bg-white border-2 border-gray-300 text-gray-600'}`}>💵 CASH</button>
+                <button onClick={() => setPaymentMode('UPI')} className={`py-4 font-black rounded-lg ${paymentMode === 'UPI' ? 'bg-purple-600 text-white shadow-inner scale-95' : 'bg-white border-2 border-gray-300 text-gray-600'}`}>📱 UPI</button>
+                <button onClick={() => setPaymentMode('CREDIT')} className={`py-4 font-black rounded-lg ${paymentMode === 'CREDIT' ? 'bg-orange-600 text-white shadow-inner scale-95' : 'bg-white border-2 border-gray-300 text-gray-600'}`}>📒 UDHAAR</button>
               </div>
 
               <button onClick={processCheckout} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-2xl py-6 rounded-xl shadow-xl transition-colors flex flex-col items-center justify-center">
@@ -577,7 +464,6 @@ export default function App() {
             </div>
           </div>
         </div>
-
       </div>
     </div>
   );
