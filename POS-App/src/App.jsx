@@ -2,6 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
+// Anti-freeze helpers
+const safeAlert = (msg) => { if (document.activeElement) document.activeElement.blur(); setTimeout(() => alert(msg), 10); };
+const safeConfirm = (msg) => { if (document.activeElement) document.activeElement.blur(); return window.confirm(msg); };
+
 export default function App() {
   // Setup & Settings
   const [serverIP, setServerIP] = useState(localStorage.getItem('server_ip') || '');
@@ -24,24 +28,14 @@ export default function App() {
 
   // Customer / Khata
   const [customer, setCustomer] = useState({ name: '', mobile: '' });
-  const [paymentMode, setPaymentMode] = useState('CASH'); // CASH, UPI, CREDIT
+  const [paymentMode, setPaymentMode] = useState('CASH'); 
 
-  // --- CUSTOM ALERTS (Fixes the Freeze Bug) ---
   const [appAlert, setAppAlert] = useState({ show: false, msg: '' });
   const [appConfirm, setAppConfirm] = useState({ show: false, msg: '', onYes: null });
 
-  const closeAlert = () => {
-    setAppAlert({ show: false, msg: '' });
-    // Instantly return focus to barcode scanner so cashier can keep scanning
-    setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100);
-  };
+  const closeAlert = () => { setAppAlert({ show: false, msg: '' }); setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100); };
+  const closeConfirm = () => { setAppConfirm({ show: false, msg: '', onYes: null }); setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100); };
 
-  const closeConfirm = () => {
-    setAppConfirm({ show: false, msg: '', onYes: null });
-    setTimeout(() => { if (barcodeRef.current) barcodeRef.current.focus(); }, 100);
-  };
-
-  // Fetch Data on Load
   useEffect(() => {
     if (serverIP && !isSettingUp) {
       fetch(`http://${serverIP}:5000/api/users`).then(res => res.json()).then(setUsers).catch(() => {});
@@ -54,35 +48,25 @@ export default function App() {
     if (ipcRenderer) {
       ipcRenderer.on('print-finished', (event, result) => {
         setIsPrinting(false);
-        if (!result.success) setAppAlert({ show: true, msg: `❌ Printer Error:\nMake sure your thermal printer is named exactly "${printerName}" in Windows Settings.` });
+        if (!result.success) setAppAlert({ show: true, msg: `❌ Printer Error:\nMake sure your 4-inch printer is named exactly "${printerName}" in Windows.` });
       });
     }
     return () => { if (ipcRenderer) ipcRenderer.removeAllListeners('print-finished'); };
   }, [printerName]);
 
-  const fetchInventory = () => {
-    fetch(`http://${serverIP}:5000/api/inventory`).then(res => res.json()).then(setInventory).catch(() => {});
-  };
+  const fetchInventory = () => { fetch(`http://${serverIP}:5000/api/inventory`).then(res => res.json()).then(setInventory).catch(() => {}); };
 
-  // --- LOGIN LOGIC ---
   const handleLogin = () => {
     const user = users.find(u => u.pin === pinInput);
-    if (user) { setLoggedInUser(user); setPinInput(''); } 
-    else { setAppAlert({ show: true, msg: "Invalid PIN" }); setPinInput(''); }
+    if (user) { setLoggedInUser(user); setPinInput(''); } else { setAppAlert({ show: true, msg: "Invalid PIN" }); setPinInput(''); }
   };
 
-  const handleLogout = () => {
-    setLoggedInUser(null); setCart([]); setCustomer({name:'', mobile:''});
-  };
+  const handleLogout = () => { setLoggedInUser(null); setCart([]); setCustomer({name:'', mobile:''}); };
 
-  // --- BARCODE SCANNER LOGIC ---
   const addToCart = (item, code) => {
     const existing = cart.find(c => c.barcode.toLowerCase() === code);
-    if (existing) {
-      setCart(cart.map(c => c.barcode.toLowerCase() === code ? { ...c, cartQty: c.cartQty + 1 } : c));
-    } else {
-      setCart([...cart, { ...item, cartQty: 1, originalPrice: item.price }]);
-    }
+    if (existing) setCart(cart.map(c => c.barcode.toLowerCase() === code ? { ...c, cartQty: c.cartQty + 1 } : c));
+    else setCart([...cart, { ...item, cartQty: 1, originalPrice: item.price }]);
   };
 
   const handleBarcodeSubmit = (e) => {
@@ -91,21 +75,13 @@ export default function App() {
     if (!code) return;
 
     const item = inventory.find(i => i.barcode.toLowerCase() === code);
-    if (!item) {
-      setAppAlert({ show: true, msg: `Barcode [${barcodeInput}] not found in master database!` });
-      setBarcodeInput(''); return;
-    }
+    if (!item) { setAppAlert({ show: true, msg: `Barcode [${barcodeInput}] not found!` }); setBarcodeInput(''); return; }
+    
     if (item.qty <= 0) {
-      setAppConfirm({
-        show: true,
-        msg: `Item "${item.name}" is OUT OF STOCK in the system.\n\nDo you want to sell it anyway?`,
-        onYes: () => { addToCart(item, code); }
-      });
+      setAppConfirm({ show: true, msg: `Item is OUT OF STOCK. Sell anyway?`, onYes: () => { addToCart(item, code); } });
       setBarcodeInput(''); return;
     }
-
-    addToCart(item, code);
-    setBarcodeInput('');
+    addToCart(item, code); setBarcodeInput('');
   };
 
   const updateCartQty = (index, newQty) => {
@@ -117,15 +93,12 @@ export default function App() {
     const newCart = [...cart]; newCart[index].price = newPrice; setCart(newCart);
   };
 
-  // --- CHECKOUT LOGIC ---
   const totalAmount = cart.reduce((sum, item) => sum + (parseFloat(item.price) * item.cartQty), 0);
   const totalItems = cart.reduce((sum, item) => sum + item.cartQty, 0);
 
   const processCheckout = async () => {
     if (cart.length === 0) return setAppAlert({ show: true, msg: "Cart is empty!" });
-    if (paymentMode === 'CREDIT' && (!customer.name || !customer.mobile)) {
-      return setAppAlert({ show: true, msg: "Customer Name and Mobile are REQUIRED for Credit/Udhaar bills." });
-    }
+    if (paymentMode === 'CREDIT' && (!customer.name || !customer.mobile)) return setAppAlert({ show: true, msg: "Customer Name & Mobile required for Udhaar." });
 
     try {
       const payload = {
@@ -134,19 +107,16 @@ export default function App() {
         customerName: customer.name, customerMobile: customer.mobile, terminalId: 'T1'
       };
 
-      const res = await fetch(`http://${serverIP}:5000/api/checkout`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-      });
+      const res = await fetch(`http://${serverIP}:5000/api/checkout`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const data = await res.json();
 
       if (data.success) {
         setLastInvoice(data.sale); 
-        
         setTimeout(() => {
           if (ipcRenderer && printerName) {
             setIsPrinting(true);
             ipcRenderer.send('print-receipt', printerName);
-            setTimeout(() => { setIsPrinting(false); if (barcodeRef.current) barcodeRef.current.focus(); }, 5000); 
+            setTimeout(() => { setIsPrinting(false); if (barcodeRef.current) barcodeRef.current.focus(); }, 4000); 
           } else {
             window.print();
             if (barcodeRef.current) barcodeRef.current.focus();
@@ -154,24 +124,20 @@ export default function App() {
           setCart([]); setCustomer({ name: '', mobile: '' }); setPaymentMode('CASH'); fetchInventory();
         }, 500);
       }
-    } catch (e) { setAppAlert({ show: true, msg: "Error connecting to server. Checkout failed." }); }
+    } catch (e) { setAppAlert({ show: true, msg: "Server Error. Checkout failed." }); }
   };
 
-  // Keep focus on barcode scanner
   useEffect(() => {
-    if (loggedInUser && barcodeRef.current && !appAlert.show && !appConfirm.show && !isPrinting) {
-      barcodeRef.current.focus();
-    }
+    if (loggedInUser && barcodeRef.current && !appAlert.show && !appConfirm.show && !isPrinting) barcodeRef.current.focus();
   }, [loggedInUser, cart, isPrinting, appAlert.show, appConfirm.show]);
 
-  // --- RENDERERS ---
   if (isSettingUp) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-gray-900 font-sans">
         <div className="bg-white p-8 rounded-lg shadow-2xl w-[450px]">
           <h1 className="text-2xl font-bold border-b pb-3 mb-4 text-blue-900">⚙️ POS Hardware Setup</h1>
-          <div className="mb-4"><label className="font-bold text-gray-700">Master Server IP</label><input type="text" value={serverIP} onChange={(e) => setServerIP(e.target.value)} placeholder="192.168.1.50" className="w-full border-2 p-2 rounded font-bold text-lg bg-blue-50 mt-1 focus:border-blue-500 outline-none" /></div>
-          <div className="mb-6"><label className="font-bold text-gray-700">Thermal Receipt Printer Name</label><input type="text" value={printerName} onChange={(e) => setPrinterName(e.target.value)} placeholder="e.g. EPSON TM-T82" className="w-full border-2 p-2 rounded font-bold text-lg mt-1 focus:border-blue-500 outline-none" /></div>
+          <div className="mb-4"><label className="font-bold text-gray-700">Master Server IP</label><input type="text" value={serverIP} onChange={(e) => setServerIP(e.target.value)} placeholder="192.168.1.50" className="w-full border-2 p-2 rounded font-bold text-lg bg-blue-50 mt-1 outline-none" /></div>
+          <div className="mb-6"><label className="font-bold text-gray-700">4-Inch Receipt Printer Name</label><input type="text" value={printerName} onChange={(e) => setPrinterName(e.target.value)} placeholder="e.g. RTP-4800" className="w-full border-2 p-2 rounded font-bold text-lg mt-1 outline-none" /></div>
           <button onClick={() => { localStorage.setItem('server_ip', serverIP); localStorage.setItem('receipt_printer', printerName); setIsSettingUp(false); }} className="w-full bg-blue-600 text-white font-bold py-3 rounded hover:bg-blue-700 shadow-md">Connect to Master</button>
         </div>
       </div>
@@ -181,21 +147,19 @@ export default function App() {
   if (!loggedInUser) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-gray-900 font-sans">
-        
         {appAlert.show && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
             <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600">
               <p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p>
-              <button onClick={() => setAppAlert({show: false, msg: ''})} className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700">OK</button>
+              <button onClick={closeAlert} className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700">OK</button>
             </div>
           </div>
         )}
-
         <div className="bg-white p-8 rounded-lg shadow-2xl w-[400px] text-center border-t-8 border-blue-600">
           <h1 className="text-3xl font-black text-gray-800 mb-2">POS Terminal</h1>
           <p className="text-gray-500 font-bold mb-6">Enter PIN to Unlock Till</p>
           <input type="password" maxLength="4" value={pinInput} onChange={e => setPinInput(e.target.value.replace(/\D/g, ''))} autoFocus onKeyDown={e => e.key === 'Enter' && handleLogin()} className="w-full border-4 border-gray-300 p-4 rounded-xl font-bold text-4xl tracking-[1em] text-center mb-6 focus:border-blue-600 outline-none shadow-inner" />
-          <button onClick={handleLogin} className="w-full bg-blue-600 text-white font-black text-xl py-4 rounded-xl shadow-lg hover:bg-blue-700 transition-colors">UNLOCK TILL</button>
+          <button onClick={handleLogin} className="w-full bg-blue-600 text-white font-black text-xl py-4 rounded-xl shadow-lg hover:bg-blue-700">UNLOCK TILL</button>
           <button onClick={() => setIsSettingUp(true)} className="mt-6 text-sm font-bold text-gray-400 hover:text-gray-600 underline">Hardware Settings</button>
         </div>
       </div>
@@ -205,17 +169,15 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-200 font-sans overflow-hidden">
       
-      {/* --- CUSTOM APP ALERTS (PREVENTS FREEZING) --- */}
       {appAlert.show && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
           <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-blue-600">
             <p className="font-bold text-gray-800 text-base mb-6 whitespace-pre-wrap">{appAlert.msg}</p>
-            <button onClick={closeAlert} autoFocus className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700 focus:ring-4 focus:ring-blue-300">OK</button>
+            <button onClick={closeAlert} autoFocus className="bg-blue-600 text-white font-bold py-2 px-8 rounded hover:bg-blue-700">OK</button>
           </div>
         </div>
       )}
 
-      {/* --- CUSTOM APP CONFIRM (PREVENTS FREEZING) --- */}
       {appConfirm.show && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[9999] p-4">
           <div className="bg-white rounded-lg shadow-2xl p-6 min-w-[300px] max-w-md text-center border-t-4 border-yellow-500">
@@ -228,47 +190,83 @@ export default function App() {
         </div>
       )}
 
-      {/* FREEZE OVERLAY */}
       {isPrinting && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-white p-8 rounded shadow-2xl text-center border-t-4 border-green-500">
-            <h2 className="text-3xl font-black text-gray-800 mb-2">Printing Receipt...</h2>
-            <p className="text-gray-600 font-bold">Please wait for the printer to cut.</p>
+            <h2 className="text-3xl font-black text-gray-800 mb-2">Printing 4-Inch Receipt...</h2>
+            <p className="text-gray-600 font-bold">Sending data to {printerName}.</p>
           </div>
         </div>
       )}
 
-      {/* HIDDEN RECEIPT LAYOUT (80mm) */}
+      {/* 4-INCH (104mm) WIDE RECEIPT LAYOUT */}
       {lastInvoice && (
-        <div id="printable-receipt" className="hidden print:block text-[12px] leading-tight">
-          <div className="text-center mb-2">
-            <h1 className="text-lg font-black">{firmSettings.shopName || 'Pushpanjali Fashion'}</h1>
-            {firmSettings.address && <div className="text-xs">{firmSettings.address}</div>}
-            {firmSettings.phone && <div className="text-xs">Ph: {firmSettings.phone}</div>}
-            {firmSettings.gstin && <div className="text-xs font-bold mt-1">GSTIN: {firmSettings.gstin}</div>}
+        <div id="printable-receipt" className="hidden print:block text-[14px] leading-tight font-mono">
+          <div className="text-center mb-4">
+            <h1 className="text-2xl font-black">{firmSettings.shopName || 'Pushpanjali Fashion'}</h1>
+            {firmSettings.address && <div className="text-[13px] mt-1">{firmSettings.address}</div>}
+            {firmSettings.phone && <div className="text-[13px] mt-1">Ph: {firmSettings.phone}</div>}
+            {firmSettings.gstin && <div className="text-[13px] font-bold mt-1">GSTIN: {firmSettings.gstin}</div>}
           </div>
-          <div className="border-b-2 border-dashed border-black mb-2"></div>
-          <div className="flex justify-between text-xs mb-1"><span>Bill: {lastInvoice.invoice}</span><span>Date: {lastInvoice.date}</span></div>
-          <div className="flex justify-between text-xs mb-2"><span>Cashier: {lastInvoice.cashier}</span><span>Time: {lastInvoice.time}</span></div>
-          {lastInvoice.customerName && <div className="text-xs font-bold mb-2">Customer: {lastInvoice.customerName}</div>}
-          <div className="border-b-2 border-dashed border-black mb-2"></div>
+          
+          <div className="border-b-[3px] border-dashed border-black mb-3"></div>
+          
+          <div className="flex justify-between text-[13px] mb-1">
+            <span className="font-bold">Bill No: {lastInvoice.invoice}</span>
+            <span>Date: {lastInvoice.date}</span>
+          </div>
+          <div className="flex justify-between text-[13px] mb-3">
+            <span>Cashier: {lastInvoice.cashier}</span>
+            <span>Time: {lastInvoice.time}</span>
+          </div>
+          
+          {lastInvoice.customerName && (
+            <div className="text-[13px] font-bold mb-3 p-2 border border-black">
+              Customer: {lastInvoice.customerName} {lastInvoice.customerMobile && ` | Ph: ${lastInvoice.customerMobile}`}
+            </div>
+          )}
+          
+          <div className="border-b-[3px] border-black mb-2"></div>
           
           <table className="w-full text-left mb-2">
-            <thead><tr className="border-b border-black"><th className="w-3/5 pb-1">Item</th><th className="w-1/5 text-center pb-1">Qty</th><th className="w-1/5 text-right pb-1">Amt</th></tr></thead>
+            <thead>
+              <tr className="border-b border-black">
+                <th className="w-1/2 pb-2 text-[14px]">Item / Barcode</th>
+                <th className="w-[15%] text-center pb-2 text-[14px]">Qty</th>
+                <th className="w-[15%] text-right pb-2 text-[14px]">Rate</th>
+                <th className="w-[20%] text-right pb-2 text-[14px]">Total</th>
+              </tr>
+            </thead>
             <tbody>
               {lastInvoice.items.map((i, idx) => (
-                <tr key={idx}>
-                  <td className="pt-1"><div className="font-bold truncate">{i.name}</div><div className="text-[10px]">{i.barcode} {i.size ? `| Sz:${i.size}` : ''}</div></td>
-                  <td className="text-center align-top pt-1 font-bold">{i.qty}</td>
-                  <td className="text-right align-top pt-1 font-bold">{i.total}</td>
+                <tr key={idx} className="border-b border-dashed border-gray-400">
+                  <td className="py-2">
+                    <div className="font-bold">{i.name} {i.size ? `(Sz:${i.size})` : ''}</div>
+                    <div className="text-[12px]">{i.barcode}</div>
+                  </td>
+                  <td className="text-center align-middle py-2 font-bold">{i.qty}</td>
+                  <td className="text-right align-middle py-2">{i.price}</td>
+                  <td className="text-right align-middle py-2 font-bold">{i.total}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="border-b-2 border-dashed border-black mb-2"></div>
-          <div className="flex justify-between font-black text-[15px] mb-1"><span>TOTAL ({totalItems} items)</span><span>Rs. {lastInvoice.amount}</span></div>
-          <div className="flex justify-between text-[11px] font-bold mb-4"><span>Payment Mode:</span><span>{lastInvoice.method}</span></div>
-          <div className="text-center font-bold text-[11px] italic">{firmSettings.billFooterMsg || 'Thank you for shopping!'}</div>
+          
+          <div className="border-b-[3px] border-black mb-3"></div>
+          
+          <div className="flex justify-between font-black text-xl mb-2">
+            <span>NET TOTAL ({totalItems} Qty)</span>
+            <span>Rs. {lastInvoice.amount}</span>
+          </div>
+          
+          <div className="flex justify-between text-[14px] font-bold mb-6">
+            <span>Payment Method:</span>
+            <span className="border border-black px-2">{lastInvoice.method}</span>
+          </div>
+          
+          <div className="text-center font-bold text-[13px] mt-4 border-t border-black pt-4">
+            {firmSettings.billFooterMsg || 'Thank you for shopping! Visit Again.'}
+          </div>
         </div>
       )}
 
@@ -357,7 +355,7 @@ export default function App() {
 
               <button onClick={processCheckout} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-2xl py-6 rounded-xl shadow-xl transition-colors flex flex-col items-center justify-center">
                 <span>GENERATE BILL</span>
-                <span className="text-sm font-bold text-blue-200 mt-1">Print Receipt & Save</span>
+                <span className="text-sm font-bold text-blue-200 mt-1">Print 4-Inch Receipt</span>
               </button>
             </div>
           </div>
